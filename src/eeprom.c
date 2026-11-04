@@ -194,6 +194,7 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
   if((params->setpoint_c < 0.0f) || (params->setpoint_c > 450.0f) ||
      (params->pid_mode >= PID_MODE_COUNT) ||
      (params->ch224a_index > 5U) ||
+     (params->maindash_alt > 1U) ||
      (params->cal_enabled > 1U) ||
      (params->autoroll_enabled > 1U) ||
      (params->buzzer_enabled > 1U) ||
@@ -250,6 +251,7 @@ void eeprom_capture_current(void)
   float boost_timeout_s = g_eeprom_params.boost_timeout_s;
   float setpoint_step_c = g_eeprom_params.setpoint_step_c;
   float time_step_s = g_eeprom_params.time_step_s;
+  uint8_t maindash_alt = g_eeprom_params.maindash_alt;
 
   memset(&g_eeprom_params, 0, sizeof(g_eeprom_params));
 
@@ -259,6 +261,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.boost_timeout_s = boost_timeout_s;
   g_eeprom_params.setpoint_step_c = setpoint_step_c;
   g_eeprom_params.time_step_s = time_step_s;
+  g_eeprom_params.maindash_alt = maindash_alt;
 
   g_eeprom_params.setpoint_c = sm_get_setpoint();
   g_eeprom_params.pid_mode = (uint8_t)sm_get_pid_mode();
@@ -427,6 +430,7 @@ void eeprom_init(void)
     g_eeprom_params.boost_timeout_s = 300.0f;
     g_eeprom_params.setpoint_step_c = 5.0f;
     g_eeprom_params.time_step_s = 5.0f;
+    g_eeprom_params.maindash_alt = 0U;
 
     if((newest != NULL) && (eeprom_params_sane(&newest->params) == 0U))
     {

@@ -62,6 +62,7 @@ static void main_adjust_setpoint(int8_t direction)
 
   if(sm_set_setpoint(setpoint) != 0U)
   {
+    maindash_notify_setpoint_adjusted();
     power_notify_activity(sm_get_uptime_ms());
     buzzer_play(BUZZER_SOUND_KEY);
   }

@@ -177,6 +177,25 @@ HEATING          SLEEP ● 300s
 - 状态：`HEATING` / `READY` / `TUNING` / `DISABLED` / `FAULT` / `TC OPEN` 等
 - 温度无效但故障尚未锁存时显示 `WAIT`
 
+### 新版全屏主界面
+
+在 `DISPLAY / UI -> ALT DASH` 中切换，旧主界面完整保留。
+
+```text
+NOW
+ 300
+    MODE STD
+[■■■■■■■■■■        ]
+```
+
+- 热端温度使用独立生成的 **46×56 大号圆润字形**（Trebuchet MS Bold，2bpp 抗锯齿），不再由小字体拉伸。
+- 左上角 `NOW` / `SET` 使用 2 倍字体；快速调温后 2 秒内显示 `SET`，数字切换为设定温度。
+- 左下角每 2 秒轮换：PID 模式 / 冷端温度 / 输入电压，使用 2 倍字体。
+- 有保护故障或电源故障时，左下角固定显示错误文本，不再轮换。
+- 最下方 y=78、高 2 px 的进度条直接显示**当前加热功率 0~100%**，与上方文字留出间隔。
+- 休眠、加热关闭或 `SM_STATE_DISABLED` 时，主区域显示闪烁的 `DISABLED`，底部信息和进度条仍正常刷新，`DISABLED` 使用灰色以区别于粉色温度。
+- `ALT DASH` 设置写入 EEPROM。
+
 [graph.c](src/graph.c:1) 曲线页：
 
 | 页面 | 内容 |
@@ -227,7 +246,7 @@ SETTINGS
 ├── BOOST          Boost 温度增量、掉温阈值、超时、设置步进
 ├── SLEEP / POWER  休眠时间、休眠温度、关加热/背光时间、SLEEP NOW、CH224A、电压保护
 ├── PROTECTION     过温、温跳、升温失败、满功率、失温阈值
-├── DISPLAY / UI   蜂鸣器开关/音量、回主界面
+├── DISPLAY / UI   蜂鸣器开关/音量、回主界面、ALT DASH 切换
 └── SYSTEM         整定、设定/时间步进、加热开关、清故障、HMS 自检、热端校准、恢复默认、退出
 ```
 ### 10 点曲线

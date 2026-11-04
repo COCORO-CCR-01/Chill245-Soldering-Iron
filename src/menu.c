@@ -22,6 +22,7 @@
 #include "verifyheater.h"
 #include "powermanagement.h"
 #include "autoroll.h"
+#include "maindash.h"
 #include "eeprom.h"
 #include "buzzer.h"
 #include "hms.h"
@@ -204,6 +205,7 @@ static const menu_item_t menu_ui_items[] =
   { "BUZZER",    MENU_ITEM_BOOL,  &menu_config.buzzer_enabled,   NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "VOLUME",    MENU_ITEM_FLOAT, &menu_config.buzzer_volume,    NULL, NULL, 0, 10.0f, 0.0f, 100.0f, 0U, "%", NULL },
   { "MAIN PAGE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_main_page },
+  { "ALT DASH",  MENU_ITEM_BOOL,  &menu_config.maindash_alt, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "BACK",      MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
 };
 
@@ -511,6 +513,11 @@ static void menu_adjust_edit(int8_t direction)
   if(menu_edit_value > menu_edit_item->max_value)
   {
     menu_edit_value = menu_edit_item->max_value;
+  }
+
+  if(menu_quick_edit != 0U)
+  {
+    maindash_notify_setpoint_adjusted();
   }
 
   menu_need_draw = 1U;

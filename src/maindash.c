@@ -23,6 +23,8 @@
 #include "onekeyboost.h"
 #include "ui_icons.h"
 #include "round_digits.h"
+#include "big_digits.h"
+#include "eeprom.h"
 #include <stdio.h>
 
 #define UI_BLACK                        (0x0000U)
@@ -700,12 +702,254 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
   }
 }
 
+
+/* ============================ 新版全屏主界面 ============================ */
+
+static uint32_t maindash_alt_last_draw_ms;
+static uint32_t maindash_alt_setpoint_until_ms;
+static uint16_t maindash_alt_line[BIG_GLYPH_W];
+
+void maindash_notify_setpoint_adjusted(void)
+{
+  uint32_t now_ms = sm_get_uptime_ms();
+
+  maindash_alt_setpoint_until_ms = now_ms + 2000U;
+}
+
+static void maindash_alt_big_digit(uint16_t x, uint16_t y, uint8_t digit)
+{
+  static const uint16_t palette[4] =
+  {
+    UI_BLACK, 0x3847U, 0x90B2U, UI_PINK
+  };
+  uint16_t row;
+  uint16_t col;
+  uint16_t index;
+  uint8_t alpha;
+
+  if(digit >= 10U)
+  {
+    display_fill_rect(x, y, BIG_GLYPH_W, BIG_GLYPH_H, UI_BLACK);
+    return;
+  }
+
+  display_set_window(x, y, BIG_GLYPH_W, BIG_GLYPH_H);
+  display_begin_pixel_stream();
+
+  for(row = 0U; row < BIG_GLYPH_H; row++)
+  {
+    for(col = 0U; col < BIG_GLYPH_W; col++)
+    {
+      index = (uint16_t)(row * BIG_GLYPH_STRIDE + (col >> 2));
+      alpha = (uint8_t)((big_digits[digit][index] >> ((col & 3U) * 2U)) & 0x03U);
+      maindash_alt_line[col] = palette[alpha];
+    }
+
+    display_write_pixel_stream(maindash_alt_line, BIG_GLYPH_W);
+  }
+
+  display_end_pixel_stream();
+}
+
+static const char *maindash_alt_error(const sm_status_t *status, uint16_t *color)
+{
+  power_fault_t power_fault = power_get_fault();
+
+  if(power_fault != POWER_FAULT_NONE)
+  {
+    *color = UI_RED;
+    return (power_fault == POWER_FAULT_UNDERVOLTAGE) ? "V LOW" : "V HIGH";
+  }
+
+  if(status->fault != VERIFY_HEATER_FAULT_NONE)
+  {
+    *color = UI_RED;
+    return maindash_fault_text(status->fault);
+  }
+
+  if(status->state == SM_STATE_FAULT)
+  {
+    *color = UI_RED;
+    return "FAULT";
+  }
+
+  *color = UI_GRAY;
+  return NULL;
+}
+
+static void maindash_alt_draw(const sm_status_t *status, uint32_t now_ms)
+{
+  uint8_t disabled;
+  uint8_t show_set;
+  uint8_t blink_on;
+  int tip_c;
+  int shown_c;
+  int hundreds;
+  int tens;
+  int units;
+  int percent;
+  uint16_t error_color;
+  const char *error_text;
+  char info[24];
+
+  tip_c = (status->temp_valid != 0U) ?
+          maindash_round_float(status->tip_c) : 0;
+  if(tip_c < 0)
+  {
+    tip_c = 0;
+  }
+  if(tip_c > 999)
+  {
+    tip_c = 999;
+  }
+
+  show_set = ((int32_t)(maindash_alt_setpoint_until_ms - now_ms) > 0) ? 1U : 0U;
+  shown_c = show_set ?
+            maindash_round_float(status->setpoint_c) : tip_c;
+  if(shown_c < 0)
+  {
+    shown_c = 0;
+  }
+  if(shown_c > 999)
+  {
+    shown_c = 999;
+  }
+
+  error_text = maindash_alt_error(status, &error_color);
+  disabled = ((power_get_state() != POWER_STATE_ACTIVE) ||
+              (sm_is_heater_enabled() == 0U) ||
+              (status->state == SM_STATE_DISABLED)) ? 1U : 0U;
+
+  /* 左上角状态 */
+  display_fill_rect(2U, 0U, 34U, 10U, UI_BLACK);
+  display_draw_string(2U, 0U, show_set ? "SET" : "NOW",
+                      show_set ? UI_PINK : UI_GRAY, UI_BLACK, 2U);
+
+  if(disabled != 0U)
+  {
+    display_fill_rect(0U, 10U, DISPLAY_WIDTH, 57U, UI_BLACK);
+
+    blink_on = (uint8_t)(((now_ms / 500U) & 1U) == 0U);
+    if(blink_on != 0U)
+    {
+      display_draw_string(14U, 23U, "DISABLED", UI_GRAY, UI_BLACK, 4U);
+    }
+  }
+  else if(status->temp_valid == 0U)
+  {
+    display_fill_rect(0U, 10U, DISPLAY_WIDTH, 57U, UI_BLACK);
+    display_draw_string(56U, 23U, "---", UI_PINK, UI_BLACK, 4U);
+  }
+  else
+  {
+    hundreds = shown_c / 100;
+    tens = (shown_c / 10) % 10;
+    units = shown_c % 10;
+
+    if(hundreds != 0)
+    {
+      maindash_alt_big_digit(9U, 11U, (uint8_t)hundreds);
+    }
+    else
+    {
+      display_fill_rect(9U, 11U, BIG_GLYPH_W, BIG_GLYPH_H, UI_BLACK);
+    }
+
+    if((hundreds != 0) || (tens != 0))
+    {
+      maindash_alt_big_digit(57U, 11U, (uint8_t)tens);
+    }
+    else
+    {
+      display_fill_rect(57U, 11U, BIG_GLYPH_W, BIG_GLYPH_H, UI_BLACK);
+    }
+
+    maindash_alt_big_digit(105U, 11U, (uint8_t)units);
+  }
+
+  /* 左下角信息：报错优先，否则模式/冷端/电压轮换 */
+  display_fill_rect(0U, 67U, DISPLAY_WIDTH, 10U, UI_BLACK);
+
+  if(error_text != NULL)
+  {
+    display_draw_string(2U, 67U, error_text, error_color, UI_BLACK, 2U);
+  }
+  else
+  {
+    switch((now_ms / 2000U) % 3U)
+    {
+      case 0U:
+        fmt_snprintf(info, sizeof(info), "MODE %s",
+                     maindash_mode_text(status->mode));
+        break;
+
+      case 1U:
+      {
+        int cold_x10 = maindash_round_float(status->room_c * 10.0f);
+        int whole = cold_x10 / 10;
+        int frac = cold_x10 % 10;
+
+        if(frac < 0)
+        {
+          frac = -frac;
+        }
+
+        fmt_snprintf(info, sizeof(info), "COLD %d.%dC", whole, frac);
+        break;
+      }
+
+      default:
+      {
+        uint16_t vin_mv = power_get_voltage_mv();
+
+        fmt_snprintf(info, sizeof(info), "VIN %d.%dV",
+                     (int)(vin_mv / 1000U),
+                     (int)((vin_mv % 1000U) / 100U));
+        break;
+      }
+    }
+
+    display_draw_string(2U, 67U, info, UI_BLUE, UI_BLACK, 2U);
+  }
+
+  /* 最下方进度条：直接显示当前加热功率 0~100% */
+  percent = (int)status->power;
+
+  if(percent < 0)
+  {
+    percent = 0;
+  }
+  if(percent > 100)
+  {
+    percent = 100;
+  }
+
+  display_fill_rect(2U, 78U, 156U, 2U, UI_DARK);
+  if(percent > 0)
+  {
+    uint16_t width = (uint16_t)((154U * (uint16_t)percent) / 100U);
+
+    display_fill_rect(2U, 78U, width, 2U,
+                      (disabled != 0U) ? UI_GRAY :
+                      ((error_text != NULL) ? UI_RED : UI_PINK));
+  }
+
+  maindash_alt_last_draw_ms = (now_ms == 0U) ? 1U : now_ms;
+}
+
 void maindash_draw(const sm_status_t *status)
 {
   uint8_t step;
 
   if(status == NULL)
   {
+    return;
+  }
+
+  if(g_eeprom_params.maindash_alt != 0U)
+  {
+    display_clear(UI_BLACK);
+    maindash_alt_draw(status, sm_get_uptime_ms());
     return;
   }
 
@@ -733,6 +977,19 @@ void maindash_draw(const sm_status_t *status)
 uint8_t maindash_update(uint32_t now_ms)
 {
   sm_status_t status;
+
+  if(g_eeprom_params.maindash_alt != 0U)
+  {
+    if((maindash_alt_last_draw_ms != 0U) &&
+       ((uint32_t)(now_ms - maindash_alt_last_draw_ms) < 250U))
+    {
+      return 0U;
+    }
+
+    sm_get_status(&status);
+    maindash_alt_draw(&status, now_ms);
+    return 1U;
+  }
 
   if(maindash_step_active == 0U)
   {

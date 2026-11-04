@@ -23,6 +23,14 @@ void maindash_init(void);
 void maindash_draw(const sm_status_t *status);
 
 /**
+  * @brief  通知新主界面刚进行了快速设定温度调整
+  * @param  none
+  * @retval none
+  * @note   新主界面会在 2 s 内显示设定温度并把左上角标记为 SET。
+  */
+void maindash_notify_setpoint_adjusted(void);
+
+/**
   * @brief  主界面周期刷新
   * @param  now_ms: 当前毫秒时间戳
   * @retval 1：本次执行了重绘；0：未到刷新时间

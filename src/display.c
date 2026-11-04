@@ -60,8 +60,8 @@
 #define DISPLAY_X_OFFSET                (-2)
 #define DISPLAY_Y_OFFSET                (24U)
 
-/* MADCTL: MY | MV | BGR，横屏 160x80。若镜像可改 0x68。 */
-#define DISPLAY_MADCTL_VALUE            (0xA8U)
+/* MADCTL: MY | MV，横屏 160x80，RGB 顺序 */
+#define DISPLAY_MADCTL_VALUE            (0xA0U)
 
 /* 面板默认需要反显；如果颜色反了改成 0 */
 #define DISPLAY_INVERT_COLORS           (1U)

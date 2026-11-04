@@ -21,6 +21,7 @@
 #include "menu.h"
 #include "onekeyboost.h"
 #include "powermanagement.h"
+#include "eeprom.h"
 
 #define AUTOROLL_DEFAULT_MS             (5000U)
 #define AUTOROLL_MIN_MS                 (1000U)
@@ -43,6 +44,13 @@ static void autoroll_draw_indicator(void)
   uint8_t i;
   uint16_t x;
   uint16_t color;
+
+  /* 新版全屏主界面底部整条是温度进度条，不叠加页面指示 */
+  if((autoroll_page == AUTOROLL_PAGE_MAIN) &&
+     (g_eeprom_params.maindash_alt != 0U))
+  {
+    return;
+  }
 
   for(i = 0U; i < (uint8_t)AUTOROLL_PAGE_COUNT; i++)
   {

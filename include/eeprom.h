@@ -51,6 +51,7 @@ typedef struct
   float voltage_recovery_ms;
 
   uint8_t ch224a_index;
+  uint8_t maindash_alt;
 
   float autoroll_s;
   uint8_t autoroll_enabled;
