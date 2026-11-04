@@ -24,6 +24,7 @@
 #include "ui_icons.h"
 #include "round_digits.h"
 #include "big_digits.h"
+#include "ui_digits.h"
 #include "eeprom.h"
 #include <stdio.h>
 
@@ -720,7 +721,7 @@ static void maindash_alt_big_digit(uint16_t x, uint16_t y, uint8_t digit)
 {
   static const uint16_t palette[4] =
   {
-    UI_BLACK, 0x3847U, 0x90B2U, UI_PINK
+    UI_BLACK, 0x2002U, UI_PINK, UI_PINK
   };
   uint16_t row;
   uint16_t col;
@@ -937,10 +938,240 @@ static void maindash_alt_draw(const sm_status_t *status, uint32_t now_ms)
   maindash_alt_last_draw_ms = (now_ms == 0U) ? 1U : now_ms;
 }
 
+
+/* ============================ 旧版主界面新排版 ============================ */
+
+static uint16_t maindash_classic_line[UI_GLYPH_W];
+
+static void maindash_classic_temp_digit(uint16_t x, uint16_t y, uint8_t digit)
+{
+  static const uint16_t palette[4] =
+  {
+    UI_BLACK, 0x2002U, UI_PINK, UI_PINK
+  };
+  uint16_t row;
+  uint16_t col;
+  uint16_t index;
+  uint8_t alpha;
+
+  if(digit >= UI_GLYPH_COUNT)
+  {
+    display_fill_rect(x, y, UI_GLYPH_W, UI_GLYPH_H, UI_BLACK);
+    return;
+  }
+
+  display_set_window(x, y, UI_GLYPH_W, UI_GLYPH_H);
+  display_begin_pixel_stream();
+
+  for(row = 0U; row < UI_GLYPH_H; row++)
+  {
+    for(col = 0U; col < UI_GLYPH_W; col++)
+    {
+      index = (uint16_t)(row * UI_GLYPH_STRIDE + (col >> 2));
+      alpha = (uint8_t)((ui_digits[digit][index] >> ((col & 3U) * 2U)) & 0x03U);
+      maindash_classic_line[col] = palette[alpha];
+    }
+
+    display_write_pixel_stream(maindash_classic_line, UI_GLYPH_W);
+  }
+
+  display_end_pixel_stream();
+}
+
+static void maindash_classic_top_text(uint16_t x, uint16_t y,
+                                      const char *text, uint8_t scale,
+                                      uint16_t color, uint16_t fill_width)
+{
+  uint16_t bg;
+  uint16_t fg;
+
+  while(*text != '\0')
+  {
+    bg = (x < fill_width) ? UI_PINK : UI_HEADER;
+    fg = (bg == UI_PINK) ? UI_BLACK : color;
+    display_draw_char(x, y, *text, fg, bg, scale);
+    x = (uint16_t)(x + (4U * scale));
+    text++;
+  }
+}
+
+static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
+{
+  const char *top_state;
+  const char *status_text;
+  uint16_t top_color;
+  uint16_t status_color;
+  uint16_t fill_width;
+  int tip_c;
+  int hundreds;
+  int tens;
+  int units;
+  uint8_t pair;
+  char value[20];
+  char text[20];
+
+  if(status == NULL)
+  {
+    return;
+  }
+
+  /* 顶栏：整条功率进度 + 功率百分比 */
+  fill_width = (uint16_t)(((uint16_t)status->power * 160U) / 100U);
+
+  display_fill_rect(0U, 0U, DISPLAY_WIDTH, 12U, UI_HEADER);
+  if(fill_width > 0U)
+  {
+    display_fill_rect(0U, 0U, fill_width, 12U, UI_PINK);
+  }
+
+  maindash_classic_top_text(2U, 1U, "Chill245", 2U, UI_WHITE, fill_width);
+
+  top_state = maindash_top_state(status, &top_color);
+  maindash_classic_top_text(80U, 1U, top_state, 2U, top_color, fill_width);
+
+  fmt_snprintf(text, sizeof(text), "%u%%", (unsigned)status->power);
+  maindash_classic_top_text((uint16_t)(158U - display_string_width(text, 2U)),
+                            1U, text, 2U, UI_WHITE, fill_width);
+
+  display_fill_rect(0U, 12U, DISPLAY_WIDTH, 1U, UI_BLUE);
+
+  /* 左侧只显示热端温度 */
+  display_fill_rect(0U, 13U, 74U, 50U, UI_BLACK);
+
+  tip_c = (status->temp_valid != 0U) ?
+          maindash_round_float(status->tip_c) : 0;
+  if(tip_c < 0)
+  {
+    tip_c = 0;
+  }
+  if(tip_c > 999)
+  {
+    tip_c = 999;
+  }
+
+  if(status->temp_valid == 0U)
+  {
+    display_draw_string(13U, 25U, "---", UI_PINK, UI_BLACK, 4U);
+  }
+  else
+  {
+    hundreds = tip_c / 100;
+    tens = (tip_c / 10) % 10;
+    units = tip_c % 10;
+
+    if(hundreds != 0)
+    {
+      maindash_classic_temp_digit(4U, 18U, (uint8_t)hundreds);
+    }
+    else
+    {
+      display_fill_rect(4U, 18U, UI_GLYPH_W, UI_GLYPH_H, UI_BLACK);
+    }
+
+    if((hundreds != 0) || (tens != 0))
+    {
+      maindash_classic_temp_digit(24U, 18U, (uint8_t)tens);
+    }
+    else
+    {
+      display_fill_rect(24U, 18U, UI_GLYPH_W, UI_GLYPH_H, UI_BLACK);
+    }
+
+    maindash_classic_temp_digit(44U, 18U, (uint8_t)units);
+    display_draw_string(66U, 28U, "C", UI_PINK, UI_BLACK, 2U);
+  }
+
+  display_fill_rect(74U, 13U, 1U, 50U, UI_BLUE);
+
+  /* 右侧：一次两行，2 秒换一组 */
+  display_fill_rect(75U, 13U, 85U, 50U, UI_BLACK);
+
+  pair = (uint8_t)((now_ms / 2000U) & 1U);
+
+  if(pair == 0U)
+  {
+    display_draw_string(78U, 20U, "SET", UI_BLUE, UI_BLACK, 1U);
+    fmt_snprintf(value, sizeof(value), "%dC",
+                 maindash_round_float(status->setpoint_c));
+    display_draw_string(104U, 15U, value, UI_WHITE, UI_BLACK, 3U);
+
+    display_fill_rect(78U, 36U, 80U, 1U, UI_DARK);
+
+    display_draw_string(78U, 43U, "MODE", UI_BLUE, UI_BLACK, 1U);
+    display_draw_string(104U, 38U, maindash_mode_text(status->mode),
+                        UI_WHITE, UI_BLACK, 3U);
+  }
+  else
+  {
+    uint16_t vin_mv = power_get_voltage_mv();
+    int cold_x10 = maindash_round_float(status->room_c * 10.0f);
+    int whole = cold_x10 / 10;
+    int frac = cold_x10 % 10;
+
+    if(frac < 0)
+    {
+      frac = -frac;
+    }
+
+    display_draw_string(78U, 20U, "VIN", UI_BLUE, UI_BLACK, 1U);
+    fmt_snprintf(value, sizeof(value), "%d.%dV",
+                 (int)(vin_mv / 1000U), (int)((vin_mv % 1000U) / 100U));
+    display_draw_string(104U, 15U, value, UI_WHITE, UI_BLACK, 3U);
+
+    display_fill_rect(78U, 36U, 80U, 1U, UI_DARK);
+
+    display_draw_string(78U, 43U, "COLD", UI_BLUE, UI_BLACK, 1U);
+    fmt_snprintf(value, sizeof(value), "%d.%dC", whole, frac);
+    display_draw_string(104U, 38U, value, UI_WHITE, UI_BLACK, 3U);
+  }
+
+  display_fill_rect(0U, 63U, DISPLAY_WIDTH, 1U, UI_BLUE);
+
+  /* 底部状态 + 休眠遥测 */
+  display_fill_rect(0U, 64U, DISPLAY_WIDTH, 13U, UI_BLACK);
+
+  status_text = maindash_status_text(status, &status_color);
+  {
+    ui_icon_t status_icon = UI_ICON_POWER;
+
+    if(status_color == UI_RED)
+    {
+      status_icon = UI_ICON_WARN;
+    }
+    else if(status_color == UI_GREEN)
+    {
+      status_icon = UI_ICON_CHECK;
+    }
+    else if(status_color == UI_YELLOW)
+    {
+      status_icon = UI_ICON_CLOCK;
+    }
+    else if(status_color == UI_ORANGE)
+    {
+      status_icon = UI_ICON_FLAME;
+    }
+
+    ui_icon_draw(status_icon, 2U, 65U, status_color);
+  }
+  display_draw_string(12U, 66U, status_text, status_color, UI_BLACK, 2U);
+
+  {
+    uint32_t remaining_ms = power_get_sleep_remaining_ms();
+    uint32_t seconds = (remaining_ms + 999U) / 1000U;
+    uint8_t vibration = power_get_vibration_state();
+
+    display_draw_string(84U, 66U, "SLEEP", UI_BLUE, UI_BLACK, 1U);
+    display_fill_rect(107U, 68U, 4U, 4U,
+                      (vibration != 0U) ? UI_PINK : UI_DARK);
+    fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
+    display_draw_string(114U, 66U, value, UI_PINK, UI_BLACK, 1U);
+  }
+
+  maindash_last_draw_ms = (now_ms == 0U) ? 1U : now_ms;
+}
+
 void maindash_draw(const sm_status_t *status)
 {
-  uint8_t step;
-
   if(status == NULL)
   {
     return;
@@ -953,25 +1184,7 @@ void maindash_draw(const sm_status_t *status)
     return;
   }
 
-  /* 页面切换/开机首帧允许一次整屏重绘 */
-  maindash_step_active = 0U;
-  maindash_cache_valid = 0U;
-  maindash_force_draw = 1U;
-  maindash_last_draw_ms = sm_get_uptime_ms();
-  if(maindash_last_draw_ms == 0U)
-  {
-    maindash_last_draw_ms = 1U;
-  }
-
-  display_clear(UI_BLACK);
-
-  for(step = 0U; step < MAINDASH_DRAW_STEPS; step++)
-  {
-    maindash_draw_step(status, step);
-  }
-
-  maindash_force_draw = 0U;
-  maindash_cache_valid = 1U;
+  maindash_classic_draw(status, sm_get_uptime_ms());
 }
 
 uint8_t maindash_update(uint32_t now_ms)
@@ -991,29 +1204,13 @@ uint8_t maindash_update(uint32_t now_ms)
     return 1U;
   }
 
-  if(maindash_step_active == 0U)
+  if((maindash_last_draw_ms != 0U) &&
+     ((uint32_t)(now_ms - maindash_last_draw_ms) < 250U))
   {
-    if((maindash_last_draw_ms != 0U) &&
-       ((uint32_t)(now_ms - maindash_last_draw_ms) < UI_INFO_PERIOD_MS))
-    {
-      return 0U;
-    }
-
-    maindash_step_active = 1U;
-    maindash_step_index = 0U;
+    return 0U;
   }
 
   sm_get_status(&status);
-  maindash_draw_step(&status, maindash_step_index);
-  maindash_step_index++;
-
-  if(maindash_step_index >= MAINDASH_DRAW_STEPS)
-  {
-    maindash_step_active = 0U;
-    maindash_cache_valid = 1U;
-    maindash_last_draw_ms = (now_ms == 0U) ? 1U : now_ms;
-    return 1U;
-  }
-
-  return 0U;
+  maindash_classic_draw(&status, now_ms);
+  return 1U;
 }
