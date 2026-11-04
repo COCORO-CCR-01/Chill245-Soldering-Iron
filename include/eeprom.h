@@ -52,6 +52,7 @@ typedef struct
 
   uint8_t ch224a_index;
   uint8_t maindash_alt;
+  uint8_t ui_light;
 
   float autoroll_s;
   uint8_t autoroll_enabled;

@@ -24,6 +24,7 @@
 #include "buzzer.h"
 #include "hms.h"
 #include "heater.h"
+#include "display.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -195,6 +196,7 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
      (params->pid_mode >= PID_MODE_COUNT) ||
      (params->ch224a_index > 5U) ||
      (params->maindash_alt > 1U) ||
+     (params->ui_light > 1U) ||
      (params->cal_enabled > 1U) ||
      (params->autoroll_enabled > 1U) ||
      (params->buzzer_enabled > 1U) ||
@@ -252,6 +254,7 @@ void eeprom_capture_current(void)
   float setpoint_step_c = g_eeprom_params.setpoint_step_c;
   float time_step_s = g_eeprom_params.time_step_s;
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
+  uint8_t ui_light = g_eeprom_params.ui_light;
 
   memset(&g_eeprom_params, 0, sizeof(g_eeprom_params));
 
@@ -262,6 +265,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.setpoint_step_c = setpoint_step_c;
   g_eeprom_params.time_step_s = time_step_s;
   g_eeprom_params.maindash_alt = maindash_alt;
+  g_eeprom_params.ui_light = ui_light;
 
   g_eeprom_params.setpoint_c = sm_get_setpoint();
   g_eeprom_params.pid_mode = (uint8_t)sm_get_pid_mode();
@@ -324,6 +328,8 @@ void eeprom_apply(void)
   uint8_t ch224a_current_index;
 
   sm_get_status(&status);
+
+  display_set_light_theme(g_eeprom_params.ui_light);
 
   /* 整定过程中不要改设定温度/PID/标定，避免破坏整定 */
   if(status.autotune_state != PID_AUTOTUNE_RUNNING)
@@ -431,6 +437,7 @@ void eeprom_init(void)
     g_eeprom_params.setpoint_step_c = 5.0f;
     g_eeprom_params.time_step_s = 5.0f;
     g_eeprom_params.maindash_alt = 0U;
+    g_eeprom_params.ui_light = 0U;
 
     if((newest != NULL) && (eeprom_params_sane(&newest->params) == 0U))
     {

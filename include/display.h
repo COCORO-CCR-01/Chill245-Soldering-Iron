@@ -69,6 +69,14 @@ uint16_t display_get_height(void);
 void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
 /**
+  * @brief  设置深色/浅色主题
+  * @param  light: 1=浅色，0=深色（默认纯黑背景）
+  * @retval none
+  * @note   只影响颜色映射，不改变调用方的逻辑颜色。
+  */
+void display_set_light_theme(uint8_t light);
+
+/**
   * @brief  写入 RGB565 像素数组
   * @param  colors: 像素数组
   * @param  count: 像素数量

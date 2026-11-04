@@ -63,8 +63,8 @@
 /* MADCTL: MY | MV，横屏 160x80，RGB 顺序 */
 #define DISPLAY_MADCTL_VALUE            (0xA0U)
 
-/* 面板默认需要反显；如果颜色反了改成 0 */
-#define DISPLAY_INVERT_COLORS           (1U)
+/* 本面板不需要反显；开启 INVON 会导致黑底变白底 */
+#define DISPLAY_INVERT_COLORS           (0U)
 
 /* 背光有效电平：1=高电平点亮 */
 #define DISPLAY_BL_ACTIVE_HIGH          (1U)
@@ -128,6 +128,33 @@ static const uint8_t display_gamma_n[] =
 };
 
 static uint8_t display_initialized;
+static uint8_t display_light_theme;
+
+void display_set_light_theme(uint8_t light)
+{
+  display_light_theme = (light != 0U) ? 1U : 0U;
+}
+
+static uint16_t display_theme_color(uint16_t color)
+{
+  if(display_light_theme == 0U)
+  {
+    return color;
+  }
+
+  switch(color)
+  {
+    case 0x0000U: return 0xFFFFU;  /* black background -> white */
+    case 0xFFFFU: return 0x0000U;  /* white text -> black */
+    case 0x9CF3U: return 0x4208U;  /* gray -> dark gray */
+    case 0x18C3U: return 0xCE79U;  /* dark panels -> light gray */
+    case 0x10A2U: return 0xEF5DU;
+    case 0x0861U: return 0xD69AU;  /* header */
+    case 0x18E3U: return 0xC618U;  /* selection accent */
+    case 0x05FFU: return 0x025FU;  /* cyan/blue -> dark teal */
+    default:      return color;
+  }
+}
 
 /* ============================ 3x5 ASCII 字体 ============================ */
 typedef struct
@@ -539,13 +566,17 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 static void display_write_color_repeat(uint16_t color, uint32_t count)
 {
   uint32_t i;
-  uint8_t high = (uint8_t)(color >> 8);
-  uint8_t low = (uint8_t)(color & 0xFFU);
+  uint8_t high;
+  uint8_t low;
 
   if(count == 0U)
   {
     return;
   }
+
+  color = display_theme_color(color);
+  high = (uint8_t)(color >> 8);
+  low = (uint8_t)(color & 0xFFU);
 
   display_cs_low();
   display_dc_command();
@@ -587,7 +618,7 @@ void display_write_pixels(const uint16_t *colors, uint32_t count)
 
   for(i = 0U; i < count; i++)
   {
-    color = colors[i];
+    color = display_theme_color(colors[i]);
     display_spi_write_byte((uint8_t)(color >> 8));
     display_spi_write_byte((uint8_t)(color & 0xFFU));
   }
@@ -625,7 +656,7 @@ void display_write_pixel_stream(const uint16_t *colors, uint32_t count)
 
   for(i = 0U; i < count; i++)
   {
-    color = colors[i];
+    color = display_theme_color(colors[i]);
     display_spi_write_byte((uint8_t)(color >> 8));
     display_spi_write_byte((uint8_t)(color & 0xFFU));
   }
@@ -751,6 +782,9 @@ static void display_draw_glyph(uint16_t x, uint16_t y,
   {
     return;
   }
+
+  fg = display_theme_color(fg);
+  bg = display_theme_color(bg);
 
   display_set_window(x, y, (uint16_t)(3U * scale), (uint16_t)(5U * scale));
 
