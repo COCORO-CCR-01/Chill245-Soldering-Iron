@@ -1,3 +1,4 @@
+#pragma GCC optimize("O2")
 /**
   **************************************************************************
   * @file     verifyheater.c
@@ -66,6 +67,9 @@
 
 /* 单次 update 允许累计的最大时间，防止调试暂停后误触发去抖 */
 #define VERIFY_MAX_DT_MS                    (1000U)
+
+/* 热上电：上电前 5s 不做温度跳变/过温判断，避免冷端/热电偶建立过程误报 */
+#define VERIFY_STARTUP_GRACE_MS             (5000U)
 
 /* ============================ 内部状态 ============================ */
 typedef struct
@@ -376,8 +380,9 @@ void verifyheater_update(const temp_data_t *temp,
 
   verifyheater_state.invalid_ms = 0U;
 
-  /* 4. 过温保护 */
-  if(temp->tip_c > verifyheater_config.overtemp_c)
+  /* 4. 过温保护：上电 5s 内屏蔽，避免热上电瞬间误报 */
+  if((now_ms >= VERIFY_STARTUP_GRACE_MS) &&
+     (temp->tip_c > verifyheater_config.overtemp_c))
   {
     verifyheater_state.overtemp_ms += dt_ms;
 
@@ -497,26 +502,35 @@ void verifyheater_update(const temp_data_t *temp,
     {
       verifyheater_state.drop_ms = 0U;
 
-      /* 9. 温度突变太快：单次跳变立即判断，持续上升率做去抖 */
-      if(abs_delta_c > verifyheater_config.temp_jump_delta_c)
+      /* 上电 5s 内不做温度突变判断；last_tip 仍在末尾持续更新，
+         5s 后不会把热上电建立过程当成一次跳变。 */
+      if(now_ms < VERIFY_STARTUP_GRACE_MS)
       {
-        verifyheater_latch(VERIFY_HEATER_FAULT_TEMP_JUMP);
-        return;
+        verifyheater_state.jump_ms = 0U;
       }
-
-      if(rate_c_s > verifyheater_config.temp_jump_rate_c_per_s)
+      else
       {
-        verifyheater_state.jump_ms += dt_ms;
-
-        if(verifyheater_state.jump_ms >= VERIFY_TEMP_JUMP_DEBOUNCE_MS)
+        /* 9. 温度突变太快：单次跳变立即判断，持续上升率做去抖 */
+        if(abs_delta_c > verifyheater_config.temp_jump_delta_c)
         {
           verifyheater_latch(VERIFY_HEATER_FAULT_TEMP_JUMP);
           return;
         }
-      }
-      else
-      {
-        verifyheater_state.jump_ms = 0U;
+
+        if(rate_c_s > verifyheater_config.temp_jump_rate_c_per_s)
+        {
+          verifyheater_state.jump_ms += dt_ms;
+
+          if(verifyheater_state.jump_ms >= VERIFY_TEMP_JUMP_DEBOUNCE_MS)
+          {
+            verifyheater_latch(VERIFY_HEATER_FAULT_TEMP_JUMP);
+            return;
+          }
+        }
+        else
+        {
+          verifyheater_state.jump_ms = 0U;
+        }
       }
     }
   }

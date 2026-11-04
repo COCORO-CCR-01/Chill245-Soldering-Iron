@@ -11,7 +11,7 @@ extern "C" {
   * @brief  初始化 20 kHz 硬件 PWM 加热器
   * @param  none
   * @retval none
-  * @note   PA8 复用为 TMR1_CH1，低电平导通、高电平关断。
+  * @note   PA8 复用为 TMR1_CH1，高电平导通、低电平关断。
   *         原理图功率管 Q6 为 P 沟道 S-LP7413DT3WG；
   *         Q8 2N7002W 只是栅极驱动 NMOS，不是功率管。
   *         PWM 频率 20 kHz，占空比 0~100%，初始化后默认 0%。
@@ -23,7 +23,6 @@ void heater_init(void);
   * @param  percent: 0~100，单位 %
   * @retval none
   * @note   直接写入 TMR1 CH1 比较值，立即生效。
-  *         0% 输出高电平关断，100% 输出低电平持续导通。
   */
 void heater_set_power(uint8_t percent);
 
@@ -42,7 +41,7 @@ uint8_t heater_get_power(void);
 void heater_force_off(void);
 
 /**
-  * @brief  查询加热器当前是否允许导通
+  * @brief  查询加热器当前是否导通
   * @param  none
   * @retval 1：占空比大于 0；0：关断
   */

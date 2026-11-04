@@ -78,6 +78,28 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 void display_write_pixels(const uint16_t *colors, uint32_t count);
 
 /**
+  * @brief  开始一次连续像素流（同一个窗口只发一次 RAMWR）
+  * @retval none
+  * @note   调用前需先 display_set_window()；配合
+  *         display_write_pixel_stream() / display_end_pixel_stream() 使用。
+  */
+void display_begin_pixel_stream(void);
+
+/**
+  * @brief  向已开始的像素流追加 RGB565 像素
+  * @param  colors: 像素数组
+  * @param  count: 像素数量
+  * @retval none
+  */
+void display_write_pixel_stream(const uint16_t *colors, uint32_t count);
+
+/**
+  * @brief  结束连续像素流并释放 CS
+  * @retval none
+  */
+void display_end_pixel_stream(void);
+
+/**
   * @brief  填充整个屏幕
   * @param  color: RGB565 颜色
   * @retval none

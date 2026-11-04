@@ -104,6 +104,43 @@ power_fault_t power_get_fault(void);
 void power_wake(void);
 
 /**
+  * @brief  手动进入休眠：关闭加热和背光，任意按键唤醒
+  */
+void power_sleep(void);
+
+/**
+  * @brief  只关闭加热器，保持屏幕；唤醒后加热仍保持关闭
+  */
+void power_heater_off(void);
+
+/**
+  * @brief  深度休眠：关闭加热器和背光；唤醒后加热仍保持关闭
+  */
+void power_sleep_deep(void);
+
+/**
+  * @brief  是否处于已关加热/背光的休眠状态
+  */
+uint8_t power_is_sleeping(void);
+
+/**
+  * @brief  震动开关当前/最近触发状态
+  * @retval 1：震动触发；0：静止
+  */
+uint8_t power_get_vibration_state(void);
+
+/**
+  * @brief  距离下一次自动休眠/关屏的剩余毫秒
+  */
+uint32_t power_get_sleep_remaining_ms(void);
+
+/**
+  * @brief  取走一次“NEXT 唤醒点击”标记，避免唤醒同时翻页
+  * @retval 1：本次 NEXT 点击用于唤醒；0：普通点击
+  */
+uint8_t power_take_wake_click(void);
+
+/**
   * @brief  注册电源故障回调
   * @param  callback: 回调，可为 NULL
   * @retval none

@@ -26,6 +26,9 @@
 #include <stddef.h>
 
 #define POWER_VOLTAGE_SAMPLE_MS         (10U)
+#define POWER_VIBRATION_DEBOUNCE_MS     (30U)
+#define POWER_ACTIVITY_POWER_MIN        (30U)
+#define POWER_ACTIVITY_ERROR_C          (5.0f)
 #define POWER_I2C_TIMEOUT               (100000U)
 #define POWER_MIN_TIMEOUT_MS            (1000U)
 
@@ -50,8 +53,11 @@ static uint32_t power_voltage_bad_since_ms;
 static uint32_t power_voltage_good_since_ms;
 
 static uint32_t power_last_motion_ms;
+static uint32_t power_vibration_latch_ms;
+static uint32_t power_vibration_raw_change_ms;
 static uint32_t power_state_enter_ms;
-static uint8_t power_last_vibration_level;
+static uint8_t power_vibration_raw_level;
+static uint8_t power_vibration_stable_level;
 static uint8_t power_sleep_heater_was_enabled;
 
 static float power_saved_setpoint_c;
@@ -275,13 +281,67 @@ float power_get_ch224a_voltage(void)
 
 void power_notify_activity(uint32_t now_ms)
 {
+  uint8_t level = power_read_vibration_level();
+
   power_last_motion_ms = now_ms;
-  power_last_vibration_level = power_read_vibration_level();
+  power_vibration_raw_level = level;
+  power_vibration_stable_level = level;
+  power_vibration_raw_change_ms = now_ms;
 }
 
 power_state_t power_get_state(void)
 {
   return power_state;
+}
+
+uint8_t power_is_sleeping(void)
+{
+  return ((power_state == POWER_STATE_HEATER_OFF) ||
+          (power_state == POWER_STATE_BACKLIGHT_OFF)) ? 1U : 0U;
+}
+
+uint8_t power_get_vibration_state(void)
+{
+  uint32_t now_ms = sm_get_uptime_ms();
+
+  /* 只有稳定低电平才算震动，避免悬空/抖动误触发 */
+  if(power_vibration_stable_level == 0U)
+  {
+    return 1U;
+  }
+
+  return ((int32_t)(power_vibration_latch_ms - now_ms) > 0) ? 1U : 0U;
+}
+
+uint32_t power_get_sleep_remaining_ms(void)
+{
+  uint32_t now_ms = sm_get_uptime_ms();
+  uint32_t elapsed;
+  uint32_t timeout;
+
+  switch(power_state)
+  {
+    case POWER_STATE_ACTIVE:
+      timeout = power_stationary_timeout_ms;
+      elapsed = (uint32_t)(now_ms - power_last_motion_ms);
+      break;
+
+    case POWER_STATE_REDUCED:
+      timeout = power_reduced_off_timeout_ms;
+      elapsed = (uint32_t)(now_ms - power_state_enter_ms);
+      break;
+
+    case POWER_STATE_HEATER_OFF:
+      timeout = power_backlight_off_timeout_ms;
+      elapsed = (uint32_t)(now_ms - power_state_enter_ms);
+      break;
+
+    case POWER_STATE_BACKLIGHT_OFF:
+    default:
+      return 0U;
+  }
+
+  return (elapsed >= timeout) ? 0U : (timeout - elapsed);
 }
 
 power_fault_t power_get_fault(void)
@@ -366,7 +426,9 @@ static void power_wake_now(uint32_t now_ms)
 
   power_last_motion_ms = now_ms;
   power_state_enter_ms = now_ms;
-  power_last_vibration_level = power_read_vibration_level();
+  power_vibration_raw_level = power_read_vibration_level();
+  power_vibration_stable_level = power_vibration_raw_level;
+  power_vibration_raw_change_ms = now_ms;
 
   if(power_fault != POWER_FAULT_NONE)
   {
@@ -399,6 +461,63 @@ static void power_wake_now(uint32_t now_ms)
 void power_wake(void)
 {
   power_wake_now(sm_get_uptime_ms());
+}
+
+static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
+{
+  uint32_t now_ms;
+
+  if(power_initialized == 0U)
+  {
+    return;
+  }
+
+  if(power_state == POWER_STATE_BACKLIGHT_OFF)
+  {
+    return;
+  }
+
+  now_ms = sm_get_uptime_ms();
+
+  /* 手动休眠也要记住原设定温度，唤醒后恢复 */
+  if(power_saved_setpoint_valid == 0U)
+  {
+    power_saved_setpoint_c = sm_get_setpoint();
+    power_saved_setpoint_valid = 1U;
+  }
+
+  if(power_state != POWER_STATE_HEATER_OFF)
+  {
+    power_enter_heater_off(now_ms);
+  }
+
+  if(restore_heater == 0U)
+  {
+    power_sleep_heater_was_enabled = 0U;
+  }
+
+  if(screen_off != 0U)
+  {
+    power_enter_backlight_off(now_ms);
+  }
+}
+
+void power_sleep(void)
+{
+  /* 菜单 SLEEP NOW：关加热+背光，唤醒恢复休眠前加热状态 */
+  power_sleep_common(1U, 1U);
+}
+
+void power_heater_off(void)
+{
+  /* 短按 PREV：只关加热，屏幕保持，唤醒后不自动恢复加热 */
+  power_sleep_common(0U, 0U);
+}
+
+void power_sleep_deep(void)
+{
+  /* 长按 PREV：关加热+屏幕，唤醒后加热保持关闭 */
+  power_sleep_common(1U, 0U);
 }
 
 static void power_latch_fault(power_fault_t fault, uint16_t voltage_mv)
@@ -473,6 +592,23 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
+  /* 使用状态判定：正在大功率加热或明显偏离设定温度，视为有人使用 */
+  if(status.temp_valid != 0U)
+  {
+    float error_c = status.tip_c - status.setpoint_c;
+
+    if(error_c < 0.0f)
+    {
+      error_c = -error_c;
+    }
+
+    if((status.power >= POWER_ACTIVITY_POWER_MIN) ||
+       (error_c >= POWER_ACTIVITY_ERROR_C))
+    {
+      power_notify_activity(now_ms);
+    }
+  }
+
   power_voltage_mv = power_vin_raw_to_mv(status.vin_raw);
 
   /* 上电/CH224A 重新协商期间不触发保护 */
@@ -534,6 +670,8 @@ static void power_voltage_task(uint32_t now_ms)
   }
 }
 
+static uint8_t power_next_wake_click;
+
 static void power_on_button(button_id_t button, button_event_t event)
 {
   (void)button;
@@ -542,6 +680,26 @@ static void power_on_button(button_id_t button, button_event_t event)
   {
     power_wake();
   }
+}
+
+/* 休眠时短按 NEXT 唤醒；NEXT 不再用 PRESS 唤醒，避免按下即翻页 */
+static void power_on_next_click(button_id_t button, button_event_t event)
+{
+  (void)button;
+
+  if((event == BUTTON_EVENT_CLICK) && (power_is_sleeping() != 0U))
+  {
+    power_next_wake_click = 1U;
+    power_wake();
+  }
+}
+
+uint8_t power_take_wake_click(void)
+{
+  uint8_t pending = power_next_wake_click;
+
+  power_next_wake_click = 0U;
+  return pending;
 }
 
 void power_init(void)
@@ -597,7 +755,10 @@ void power_init(void)
   power_voltage_good_since_ms = 0U;
   power_last_motion_ms = sm_get_uptime_ms();
   power_state_enter_ms = power_last_motion_ms;
-  power_last_vibration_level = power_read_vibration_level();
+  power_vibration_raw_level = power_read_vibration_level();
+  power_vibration_stable_level = power_vibration_raw_level;
+  power_vibration_raw_change_ms = power_last_motion_ms;
+  power_vibration_latch_ms = 0U;
   power_saved_setpoint_valid = 0U;
   power_fault_heater_was_enabled = 0U;
   power_wake_pending = 0U;
@@ -608,8 +769,8 @@ void power_init(void)
                                   power_on_button);
   (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_PRESS,
                                   power_on_button);
-  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_PRESS,
-                                  power_on_button);
+  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
+                                  power_on_next_click);
 
   /* 默认 20V；CH224A 固定档位没有 24V，24V 请求会落到 20V */
   (void)power_ch224a_set_voltage(POWER_CH224A_DEFAULT_VOLTAGE_V);
@@ -628,11 +789,27 @@ void power_update(uint32_t now_ms)
   power_voltage_task(now_ms);
 
   level = power_read_vibration_level();
-  motion = (level != power_last_vibration_level) ? 1U : 0U;
 
-  if(motion != 0U)
+  if(level != power_vibration_raw_level)
   {
-    power_last_vibration_level = level;
+    power_vibration_raw_level = level;
+    power_vibration_raw_change_ms = now_ms;
+  }
+
+  motion = 0U;
+
+  if(((uint32_t)(now_ms - power_vibration_raw_change_ms) >=
+      POWER_VIBRATION_DEBOUNCE_MS) &&
+     (power_vibration_stable_level != power_vibration_raw_level))
+  {
+    power_vibration_stable_level = power_vibration_raw_level;
+
+    /* 只有稳定拉低才认为是一次真实震动 */
+    if(power_vibration_stable_level == 0U)
+    {
+      motion = 1U;
+      power_vibration_latch_ms = now_ms + 500U;
+    }
   }
 
   if(power_fault != POWER_FAULT_NONE)

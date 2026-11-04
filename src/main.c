@@ -1,7 +1,7 @@
 /**
   **************************************************************************
   * @file     main.c
-  * @brief    JBC245 烙铁控制器主程序
+  * @brief    Chill245 烙铁控制器主程序
   **************************************************************************
   * 所有模块由 statemachine 统一调度：
   *   TMR1 更新中断 20 kHz：ADC -> 温度 -> PID -> 保护 -> PWM
@@ -13,7 +13,6 @@
 
 #include "at32f421_wk_config.h"
 #include "wk_system.h"
-#include "debug.h"
 #include "display.h"
 #include "buttons.h"
 #include "powermanagement.h"
@@ -43,6 +42,79 @@ static void boot_wdt_relax(void)
   wdt_counter_reload();
 }
 
+/* 非菜单界面按键仲裁 */
+static void main_buttons(button_id_t button, button_event_t event)
+{
+  if((menu_is_open() != 0U) || (tempcal_is_active() != 0U))
+  {
+    return;
+  }
+
+  /* 短按 MENU：单按键轮换页面 */
+  if((button == BUTTON_MENU) && (event == BUTTON_EVENT_CLICK))
+  {
+    autoroll_next();
+    return;
+  }
+
+  /* 短按 NEXT：取消 Boost；加热关闭时恢复加热；不做页面切换 */
+  if((button == BUTTON_NEXT) && (event == BUTTON_EVENT_CLICK))
+  {
+    /* 深度休眠的第一次 NEXT 只负责唤醒屏幕 */
+    if(power_get_state() == POWER_STATE_BACKLIGHT_OFF)
+    {
+      return;
+    }
+
+    /* 短按 PREV 的 HEATER_OFF 状态屏幕还在，NEXT 直接唤醒并恢复加热 */
+    if(power_get_state() == POWER_STATE_HEATER_OFF)
+    {
+      power_wake();
+    }
+
+    if(onekeyboost_is_active() != 0U)
+    {
+      onekeyboost_cancel();
+      return;
+    }
+
+    if(sm_is_heater_enabled() == 0U)
+    {
+      if(sm_set_heater_enabled(1U) != 0U)
+      {
+        buzzer_play(BUZZER_SOUND_KEY);
+      }
+    }
+
+    return;
+  }
+
+  /* 短按 PREV：只关闭加热器，屏幕保持；长按才关屏幕 */
+  if((button == BUTTON_PREV) && (event == BUTTON_EVENT_CLICK))
+  {
+    if(onekeyboost_is_active() != 0U)
+    {
+      onekeyboost_cancel();
+    }
+
+    power_heater_off();
+    buzzer_play(BUZZER_SOUND_KEY);
+    return;
+  }
+
+  /* 长按 PREV：彻底关闭加热器和屏幕 */
+  if((button == BUTTON_PREV) && (event == BUTTON_EVENT_LONG_PRESS))
+  {
+    if(onekeyboost_is_active() != 0U)
+    {
+      onekeyboost_cancel();
+    }
+
+    power_sleep_deep();
+    return;
+  }
+}
+
 /**
   * @brief  main function.
   * @param  none
@@ -70,8 +142,6 @@ int main(void)
   wk_timebase_init();
 
   /* 串口尽早初始化，后续每个阶段都能打印 */
-  debug_init();
-
   /* 时钟/时基已运行，再给一次短闪并重装 WDT */
   wdt_counter_reload();
 
@@ -81,7 +151,7 @@ int main(void)
   display_backlight_set(1U);
 
   display_clear(DISPLAY_COLOR_BLACK);
-  display_draw_string(2U, 2U, "JBC245", DISPLAY_COLOR_WHITE,
+  display_draw_string(2U, 2U, "Chill245", DISPLAY_COLOR_WHITE,
                       DISPLAY_COLOR_BLACK, 2U);
 #else
 #endif
@@ -91,6 +161,14 @@ int main(void)
 
   /* 按键：PA15=MENU，PB3=PREV，PB4=NEXT */
   buttons_init();
+  (void)buttons_register_callback(BUTTON_MENU, BUTTON_EVENT_CLICK,
+                                  main_buttons);
+  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_CLICK,
+                                  main_buttons);
+  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_LONG_PRESS,
+                                  main_buttons);
+  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
+                                  main_buttons);
 
   /* 电源管理：电压换算、震动休眠、保护、CH224A */
   power_init();
@@ -166,8 +244,6 @@ int main(void)
     uint32_t now_ms;
 
     /* 后台 1 kHz：读取控制快照并处理调试串口 */
-    sm_slow_update();
-
     /* 加热独立看门狗：控制序列停滞则强制关加热并进入 HMS */
     sm_heater_watchdog_task();
 

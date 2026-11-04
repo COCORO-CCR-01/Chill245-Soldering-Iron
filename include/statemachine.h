@@ -83,7 +83,6 @@ void sm_heater_watchdog_task(void);
   * @note   建议在主循环中每 SM_SLOW_PERIOD_MS 调用一次。
   *         内部读取控制环快照，不直接操作 20 kHz 控制数据。
   */
-void sm_slow_update(void);
 
 /**
   * @brief  获取当前状态
@@ -111,7 +110,6 @@ uint32_t sm_get_uptime_ms(void);
   * @param  state: 状态
   * @retval 静态字符串
   */
-const char *sm_state_name(sm_state_t state);
 
 /**
   * @brief  启用/禁用加热输出

@@ -5,7 +5,7 @@
   **************************************************************************
   * - NEXT 长按：切 BOOST 曲线，设定温度 + boost_offset_c
   * - 非 Boost 时温度 1 s 内突降超过 boost_drop_c：自动进入 Boost
-  * - PREV 短按：退出 Boost，恢复原设定
+  * - NEXT 短按：退出 Boost，恢复原设定
   * - 超时 boost_timeout_s 自动退出
   **************************************************************************
   */
@@ -19,12 +19,13 @@
 #include "tempcal.h"
 #include "buttons.h"
 #include "buzzer.h"
-#include "debug.h"
 #include <stddef.h>
 
 #define ONEKEYBOOST_DROP_WINDOW_MS      (1000U)
 #define ONEKEYBOOST_PEAK_HOLD_MS        (1200U)
 #define ONEKEYBOOST_TEMP_EPS_C          (0.5f)
+#define ONEKEYBOOST_REARM_DELAY_MS      (5000U)
+#define ONEKEYBOOST_DROP_CONFIRM_MS     (150U)
 
 static uint8_t onekeyboost_active;
 static float onekeyboost_orig_setpoint_c;
@@ -36,6 +37,8 @@ static uint32_t onekeyboost_start_ms;
 static float onekeyboost_peak_c;
 static uint32_t onekeyboost_peak_ms;
 static float onekeyboost_last_setpoint_c;
+static uint32_t onekeyboost_cooldown_until_ms;
+static uint32_t onekeyboost_drop_pending_ms;
 
 static float onekeyboost_absf(float value)
 {
@@ -142,6 +145,13 @@ static uint8_t onekeyboost_start_internal(uint8_t from_drop, uint32_t now_ms)
     return 1U;
   }
 
+  /* 刚退出 Boost 后给温度一个回落/稳定的冷却期，禁止掉温自动重入 */
+  if((from_drop != 0U) &&
+     ((int32_t)(onekeyboost_cooldown_until_ms - now_ms) > 0))
+  {
+    return 0U;
+  }
+
   sm_get_status(&status);
 
   if((status.state == SM_STATE_FAULT) ||
@@ -188,6 +198,8 @@ static uint8_t onekeyboost_start_internal(uint8_t from_drop, uint32_t now_ms)
   onekeyboost_active = 1U;
   onekeyboost_start_ms = now_ms;
   onekeyboost_last_setpoint_c = onekeyboost_boost_setpoint_c;
+  onekeyboost_cooldown_until_ms = 0U;
+  onekeyboost_drop_pending_ms = 0U;
   onekeyboost_reset_peak(status.tip_c, now_ms);
 
   buzzer_play(BUZZER_SOUND_MODE);
@@ -206,12 +218,16 @@ uint8_t onekeyboost_start_manual(void)
 
 void onekeyboost_cancel(void)
 {
+  uint32_t now_ms;
+  sm_status_t status;
+
   if(onekeyboost_active == 0U)
   {
     return;
   }
 
   onekeyboost_active = 0U;
+  now_ms = sm_get_uptime_ms();
 
   (void)sm_set_setpoint(onekeyboost_orig_setpoint_c);
   (void)sm_set_pid_mode(onekeyboost_orig_mode);
@@ -220,6 +236,12 @@ void onekeyboost_cancel(void)
   {
     (void)sm_set_heater_enabled(0U);
   }
+
+  sm_get_status(&status);
+  onekeyboost_reset_peak(status.tip_c, now_ms);
+  onekeyboost_last_setpoint_c = onekeyboost_orig_setpoint_c;
+  onekeyboost_drop_pending_ms = 0U;
+  onekeyboost_cooldown_until_ms = now_ms + ONEKEYBOOST_REARM_DELAY_MS;
 
   buzzer_play(BUZZER_SOUND_MODE);
 }
@@ -257,51 +279,12 @@ static void onekeyboost_on_button(button_id_t button, button_event_t event)
   {
     (void)onekeyboost_start_manual();
   }
-  else if((button == BUTTON_PREV) && (event == BUTTON_EVENT_CLICK))
+  else if((button == BUTTON_NEXT) && (event == BUTTON_EVENT_CLICK))
   {
     if(onekeyboost_active != 0U)
     {
       onekeyboost_cancel();
     }
-  }
-}
-
-static void onekeyboost_debug_command(int argc, char **argv)
-{
-  if(argc < 2)
-  {
-    debug_write("usage: boost start|stop|status\r\n");
-    return;
-  }
-
-  if((argv[1][0] == 's') && (argv[1][1] == 't') &&
-     (argv[1][2] == 'a') && (argv[1][3] == 'r') &&
-     (argv[1][4] == 't') && (argv[1][5] == '\0'))
-  {
-    if(onekeyboost_start_manual() == 0U)
-    {
-      debug_write("boost cannot start\r\n");
-    }
-  }
-  else if((argv[1][0] == 's') && (argv[1][1] == 't') &&
-          (argv[1][2] == 'o') && (argv[1][3] == 'p') &&
-          (argv[1][4] == '\0'))
-  {
-    onekeyboost_cancel();
-  }
-  else if((argv[1][0] == 's') && (argv[1][1] == 't') &&
-          (argv[1][2] == 'a') && (argv[1][3] == 't') &&
-          (argv[1][4] == 'u') && (argv[1][5] == 's') &&
-          (argv[1][6] == '\0'))
-  {
-    debug_printf("boost=%u setpoint=",
-                 (unsigned)onekeyboost_active);
-    debug_write_float(sm_get_setpoint(), 1U);
-    debug_write("C\r\n");
-  }
-  else
-  {
-    debug_write("usage: boost start|stop|status\r\n");
   }
 }
 
@@ -311,15 +294,13 @@ void onekeyboost_init(void)
   onekeyboost_peak_c = 0.0f;
   onekeyboost_peak_ms = 0U;
   onekeyboost_last_setpoint_c = 0.0f;
+  onekeyboost_cooldown_until_ms = 0U;
+  onekeyboost_drop_pending_ms = 0U;
 
   (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_LONG_PRESS,
                                   onekeyboost_on_button);
-  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_CLICK,
+  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
                                   onekeyboost_on_button);
-
-  (void)debug_register_command("boost",
-                               "one-key boost: boost start|stop|status",
-                               onekeyboost_debug_command);
 }
 
 void onekeyboost_task(uint32_t now_ms)
@@ -383,6 +364,25 @@ void onekeyboost_task(uint32_t now_ms)
     return;
   }
 
+  /* 退出 Boost 后至少冷却 5 s，期间不响应掉温自动 Boost */
+  if((int32_t)(onekeyboost_cooldown_until_ms - now_ms) > 0)
+  {
+    onekeyboost_reset_peak(tip_c, now_ms);
+    onekeyboost_drop_pending_ms = 0U;
+    return;
+  }
+
+  /*
+   * 当前温度已经达到/高于设定温度时，即使从峰值回落也不自动 Boost。
+   * 自动 Boost 只用于“低于目标且被焊点拉低”的场景。
+   */
+  if(tip_c >= sm_get_setpoint())
+  {
+    onekeyboost_reset_peak(tip_c, now_ms);
+    onekeyboost_drop_pending_ms = 0U;
+    return;
+  }
+
   if((tip_c >= (onekeyboost_peak_c - 0.2f)) ||
      ((uint32_t)(now_ms - onekeyboost_peak_ms) >
       ONEKEYBOOST_PEAK_HOLD_MS))
@@ -398,11 +398,30 @@ void onekeyboost_task(uint32_t now_ms)
     if((uint32_t)(now_ms - onekeyboost_peak_ms) <=
        ONEKEYBOOST_DROP_WINDOW_MS)
     {
-      (void)onekeyboost_start_internal(1U, now_ms);
+      /* 掉温需持续 150 ms，过滤单次采样尖峰 */
+      if(onekeyboost_drop_pending_ms == 0U)
+      {
+        onekeyboost_drop_pending_ms = now_ms;
+      }
+      else if((uint32_t)(now_ms - onekeyboost_drop_pending_ms) >=
+              ONEKEYBOOST_DROP_CONFIRM_MS)
+      {
+        onekeyboost_drop_pending_ms = 0U;
+
+        if(onekeyboost_start_internal(1U, now_ms) == 0U)
+        {
+          onekeyboost_reset_peak(tip_c, now_ms);
+        }
+      }
     }
     else
     {
+      onekeyboost_drop_pending_ms = 0U;
       onekeyboost_reset_peak(tip_c, now_ms);
     }
+  }
+  else
+  {
+    onekeyboost_drop_pending_ms = 0U;
   }
 }

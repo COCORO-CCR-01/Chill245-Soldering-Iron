@@ -1,4 +1,4 @@
-# JBC245 烙铁控制器（PlatformIO）
+# Chill245 烙铁控制器（PlatformIO）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
@@ -19,10 +19,10 @@ Flash wait = 3 WS
 - SysTick：AHB/8 = 1 MHz
 - TMR1：120 MHz，ARR=5999 -> 20 kHz
 - ADC：120 MHz / 6 = 20 MHz
-- 显示当前使用 GPIO bit-bang 4-line SPI（约 2.5 MHz），SPI1 暂不参与显示
+- 显示使用 SPI1 硬件 4-line SPI（约 7.5 MHz）；保留 GPIO bit-bang 作为 `DISPLAY_USE_BITBANG=1` 回退
 - USART1：115200 8N1，由 PCLK 分频
 
-> HICK 是内部 RC，频率精度低于晶振；20 kHz PWM、ADC 采样和 115200 串口都会随 HICK 有少量频偏。当前代码没有 HEXT 初始化路径。
+> HICK 是内部 RC，频率精度低于晶振；20 kHz PWM 和 ADC 采样会随 HICK 有少量频偏。当前代码没有 HEXT 初始化路径。
 
 HICK 8 MHz
   └─ /2 = 4 MHz
@@ -38,7 +38,6 @@ Flash wait = 3 WS
 cd jbc245
 pio run                 # 编译
 pio run -t upload       # 烧录（板级默认 atlink，可在 platformio.ini 改 upload_protocol）
-pio device monitor      # 调试串口 PA9/PA10，115200 8N1
 ```
 
 编译输出：
@@ -50,24 +49,17 @@ pio device monitor      # 调试串口 PA9/PA10，115200 8N1
 ```
 
 > `platformio.ini` 使用 `board_build.ldscript = linker/AT32F421x8_62K.ld`，程序区 62 KB，最后 2 KB 留给 Flash 参数区。
+>
+> 全局编译使用 `-Os` 节省 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制路径速度。
 
-### 启动诊断
+### 启动
 
 - `APP_ENABLE_DISPLAY` 为 **1**：显示初始化和主界面刷新已恢复
-- 为节省 Flash，已删除逐阶段蜂鸣、PA6 启动心跳、`[BOOT]`/`[SM]`/`[ADC]` 诊断日志
-- 保留串口调试控制台、HardFault 快速闪 PA6、PLL 超时回退 HICK
+- 串口调试系统已完全删除；PA9/PA10 不再初始化
+- 保留 HardFault 快速闪 PA6、PLL 超时回退 HICK
 - 若 PA6 快速连续闪：进入 `HardFault_Handler`，属于硬件异常
 - PLL 锁定/切换超时会自动回退到 HICK 8 MHz，优先保证能启动
 - 焊屏后 `APP_ENABLE_DISPLAY` 保持为 **1**
-
-串口：
-
-```text
-PA9  = MCU TX -> USB-TTL RX
-PA10 = MCU RX -> USB-TTL TX
-GND  = GND
-115200 8N1
-```
 
 ## 目录
 
@@ -76,7 +68,7 @@ jbc245/
 ├── platformio.ini
 ├── include/
 │   ├── adc.h / temp.h / verifyheater.h
-│   ├── pid.h / heater.h / debug.h / display.h
+│   ├── pid.h / heater.h / display.h
 │   ├── statemachine.h / maindash.h / graph.h / autoroll.h / menu.h / eeprom.h
 │   ├── led.h / hms.h / ui_icons.h / tempcal.h / onekeyboost.h
 │   ├── at32f421_conf.h
@@ -86,7 +78,7 @@ jbc245/
 │   └── AT32F421x8_62K.ld
 ├── src/
 │   ├── main.c
-│   ├── adc.c / temp.c / verifyheater.c / pid.c / heater.c / debug.c / display.c
+│   ├── adc.c / temp.c / verifyheater.c / pid.c / heater.c / display.c
 │   ├── statemachine.c / maindash.c / graph.c / autoroll.c / menu.c / eeprom.c
 │   ├── led.c / hms.c / ui_icons.c / tempcal.c / onekeyboost.c
 │   ├── at32f421_int.c / at32f421_wk_config.c / wk_system.c
@@ -96,7 +88,7 @@ jbc245/
     └── hardware  map.epro2
 ```
 
-ADC、温度、保护、PID、加热器、调试、状态机、ST7735S 显示、主界面、曲线页面、按键、蜂鸣器、LED、HMS、电源管理和 Flash 参数保存已实现。
+ADC、温度、保护、PID、加热器、状态机、ST7735S 显示、主界面、曲线页面、按键、蜂鸣器、LED、HMS、电源管理和 Flash 参数保存已实现。
 
 ## 引脚
 
@@ -119,8 +111,8 @@ ADC、温度、保护、PID、加热器、调试、状态机、ST7735S 显示、
 | PB6 | CH224A I2C_SCL | I2C1_SCL，MUX_1，外部 1k 上拉 |
 | PB7 | CH224A I2C_SDA | I2C1_SDA，MUX_1，外部 1k 上拉 |
 | PA8 | 加热器栅极驱动（Q8/Q5） | PWM 低电平导通 Q6 PMOS |
-| PA9 | 调试串口 TX | USART1_TX，115200 8N1 |
-| PA10 | 调试串口 RX | USART1_RX，115200 8N1 |
+| PA9 | 未使用 | 原调试串口 TX，调试系统已删除 |
+| PA10 | 未使用 | 原调试串口 RX，调试系统已删除 |
 
 ADC 采用单通道逐路软件触发：PA0 -> PA1 -> PA2。每次转换前清除 CCE、切换通道并明确调用 `adc_ordinary_software_trigger_enable()`，不再反复关闭/开启 ADC。校准恢复为完整流程：ADC 使能、tSTAB、ADCALINIT、ADCAL。首次转换失败会打印一次 `[ADC] conv TIMEOUT` 和 `ctrl1/ctrl2/sts` 寄存器值。
 
@@ -128,12 +120,13 @@ ADC 采用单通道逐路软件触发：PA0 -> PA1 -> PA2。每次转换前清�
 
 [display.c](src/display.c:1) 驱动 ST7735S，**160(H) x 80(V) 横屏**，RGB565，4-line SPI。
 
-- 显示：PA5=SCL，PA7=SDA，GPIO bit-bang，约 2.5 MHz，mode 0，MSB first；主界面 6 步非阻塞刷新 + 脏值缓存，只重画变化项
+- 显示：PA5=SCL，PA7=SDA，SPI1 硬件约 7.5 MHz，mode 0，MSB first；主界面 7 步非阻塞刷新 + 脏值缓存，只重画变化项
 - PA4=CS，PB0=RS/DC，PA3=背光
-- 默认横屏：`MADCTL=0xA8`，X offset=1，Y offset=26
+- 默认横屏：`MADCTL=0xA8`，X offset=-2（左侧裁剪），Y offset=24
+- 硬件 SPI 命令与参数之间释放 CS（参考 `ST7735S-master`）；bit-bang 回退约 1.7 MHz
 - 若横屏镜像，可把 `DISPLAY_MADCTL_VALUE` 改为 `0x68`
 
-> TODO(display)：硬件 SPI1 多次验证花屏，已保留 bit-bang，优化到约 2.5 MHz；主界面拆成 6 个非阻塞步骤/200 ms 周期，并加脏值缓存，只刷新温度、功率等变化项。
+> 硬件 SPI1 采用 `SPI_MCLK_DIV_16`（7.5 MHz）；如果长排线仍花屏，可先降到 `SPI_MCLK_DIV_32/64`，或把 `DISPLAY_USE_BITBANG` 改回 `1`。
 - `display_init()` 初始化 SPI/GPIO 和面板，背光默认关闭
 - `main.c` 已注册：
   ```c
@@ -158,18 +151,26 @@ ADC 采用单通道逐路软件触发：PA0 -> PA1 -> PA2。每次转换前清�
 [maindash.c](src/maindash.c:1) 主界面，**160x80 横屏**：
 
 ```text
-JBC245                              RUN
- 300°C          VIN  24.1V
- 45% PWR        COLD 25.3C
-                SET  300C
+Chill245                            RUN
+ 300°C          SET  300C
+ 45% PWR        VIN  24.1V
+                COLD 25.3C
                 MODE STD
-HEATING
+HEATING          SLEEP ● 300s
           [■][ ][ ][ ]      <- 页面指示
 ```
 
-- 左侧：3 位七段热端温度 + °C，下方 2 位七段功率 + %
-- 右侧：VIN / COLD / SET / MODE 四行信息，每行带 8x8 图标
+- 左侧：3 位大号 **Trebuchet MS Bold 圆润字形**（18x30，2bpp 抗锯齿）+ °C，下方 2 位半尺寸圆润功率 + %
+- 右侧：SET / VIN / COLD / MODE 四行，标签 3x5，数值放大到 2 倍
+- 每行带 8x8 图标，标签蓝色，数值白色/蓝色，VIN 故障红色
+- 右下角：`SLEEP` + 震动触发圆点 + 自动休眠剩余秒数
+  - 圆点亮粉：PB1 震动开关稳定触发（30 ms 去抖 + 500 ms 锁存）
+  - 圆点暗蓝：静止
+  - `SLEEP n s`：ACTIVE 到降温、REDUCED 到关加热、HEATER_OFF 到关屏的剩余时间
 - 顶部状态和底部状态也带图标（火焰/警告/时钟/电源）
+- 主界面配色：深蓝标题栏 + 粉色温度/加热 + 蓝色功率/就绪 + 红色故障 + 白色数值
+- 右侧信息标签/图标为蓝色，数值白色；VIN 故障红色
+- 菜单/曲线页统一为粉色强调、蓝色选中/曲线、白色数值、红色故障
 - 菜单行带类型图标：子菜单箭头、开关勾选、数值上下、动作闪电、曲线图标
 - 所有图标为 8x8 单色，避免挤压 160x80 布局
 - 底部：工作状态短信息 + 页面指示
@@ -185,17 +186,21 @@ HEATING
 | `COLD` | 冷端温度曲线（黄），自动量程 |
 
 - 80 点历史，250 ms/点，约 20 秒窗口
-- 曲线每 500 ms 重绘
+- 曲线每 250 ms 重绘
+- 绘图区使用 **4bpp 离屏缓冲（125×49）**
+- 每帧整块重写绘图区：一次 `display_set_window(125×49)` + 一次 RAMWR，逐行连续送像素
+- 不再做“逐行比较、只写变化行”的差分刷新，彻底消除旧曲线残留/拖影
+- 标题、坐标标签、底部区域只在进入曲线页/换页时清一次，之后用定宽空格覆盖
+- 顶部标题保持 2 倍字体：`TEMP/PWR` / `VOLTAGE` / `COLD`
+- 坐标轴文字放大到 **2 倍字体**：左侧 Y 轴数值右对齐，底部 `20S` 也放大
+- 右上角固定 8 字符显示当前量：温度+功率 / 当前电压 / 当前冷端温度
 - 图表左侧显示当前量程，底部显示 20 秒窗口
 
-[autoroll.c](src/autoroll.c:1) 自动轮换：
+[autoroll.c](src/autoroll.c:1) 页面管理已改为**纯手动**，定时自动翻页已删除：
 
 ```c
-autoroll_init(5000U);          /* 5 秒一页，可设 1000~60000 ms */
-autoroll_set_interval(3000U);  /* 运行时修改 */
-autoroll_enable(1U);
-autoroll_next();               /* 手动下一页 */
-autoroll_prev();               /* 手动上一页 */
+autoroll_next();               /* MENU 短按：下一页 */
+autoroll_prev();               /* PREV 短按：上一页 */
 autoroll_set_page(AUTOROLL_PAGE_VOLTAGE);
 ```
 
@@ -208,8 +213,11 @@ autoroll_set_page(AUTOROLL_PAGE_VOLTAGE);
 - **MENU 长按 2 s**：进入菜单
 - **MENU 单击**：进入子菜单 / 确认编辑
 - **PREV / NEXT**：移动选择 / 修改数值
+- **主界面短按 PREV**：只关闭加热，屏幕保持；长按 PREV：深度休眠（关加热+屏幕）；菜单内不触发
 - **MENU 长按 2 s**：返回上一级；根页面关闭菜单
-- 菜单打开时暂停自动轮换，并阻止休眠计时
+- 菜单打开时暂停页面切换，并阻止休眠计时
+- 菜单数值使用整数缩放格式化，不依赖 newlib 浮点 printf
+- 配色：深色标题栏 + 橙色选中条 + 深青选中行 + 琥珀色数值
 
 分类：
 
@@ -217,10 +225,10 @@ autoroll_set_page(AUTOROLL_PAGE_VOLTAGE);
 SETTINGS
 ├── TEMPERATURE    设定温度、PID 模式、Kp/Ki/Kd、自定义曲线、温度标定、整定
 ├── BOOST          Boost 温度增量、掉温阈值、超时、设置步进
-├── SLEEP / POWER  休眠时间、休眠温度、关加热/背光时间、CH224A、电压保护
+├── SLEEP / POWER  休眠时间、休眠温度、关加热/背光时间、SLEEP NOW、CH224A、电压保护
 ├── PROTECTION     过温、温跳、升温失败、满功率、失温阈值
-├── DISPLAY / UI   自动轮换开关/时间、蜂鸣器开关/音量、回主界面
-└── SYSTEM         整定、加热开关、清故障、HMS 自检、热端校准、恢复默认、退出
+├── DISPLAY / UI   蜂鸣器开关/音量、回主界面
+└── SYSTEM         整定、设定/时间步进、加热开关、清故障、HMS 自检、热端校准、恢复默认、退出
 ```
 ### 10 点曲线
 
@@ -258,7 +266,7 @@ sector 63: 0x0800FC00 ~ 0x0800FFFF
 - 自动整定完成后自动保存 PID 结果
 - 上电先关闭加热，参数和 CH224A 档位应用完成后再恢复加热
 
-保存内容：设定温度、PID 模式/标准参数、10 点自定义 PID 曲线、10 点温度标定、休眠/电压/CH224A、保护阈值、自动轮换、蜂鸣器开关/音量、Boost 增量/掉温阈值/超时、设置步进。
+保存内容：设定温度、PID 模式/标准参数、10 点自定义 PID 曲线、10 点温度标定、休眠/电压/CH224A、保护阈值、蜂鸣器开关/音量、Boost 增量/掉温阈值/超时、设置步进。
 
 > 当前参数格式为 **v5**。旧 v1~v4 记录会按版本不匹配处理，首次升级使用默认值。固件下载/整片擦除会清掉参数区；正常复位不会。
 
@@ -390,8 +398,13 @@ HEATER_OFF --继续静止 5 min--> BACKLIGHT_OFF（关闭背光）
 
 - `REDUCED` 状态检测到震动会恢复原目标温度并回到 `ACTIVE`
 - `HEATER_OFF` / `BACKLIGHT_OFF` 状态震动不唤醒
-- 任意按键 `PRESS` 都会唤醒：背光打开、恢复原目标温度、重新使能加热
+- 任意按键 `PRESS` 都会唤醒；是否恢复加热取决于进入休眠的方式
 - 按键唤醒由 `power_init()` 自动注册到 `buttons.h`
+- 菜单 `SLEEP / POWER -> SLEEP NOW` 可立即手动休眠；也可调用 `power_sleep()`
+- 主界面短按 PREV 调用 `power_heater_off()`：只关加热，屏幕保持；按键唤醒不会自动恢复加热
+- 主界面长按 PREV 调用 `power_sleep_deep()`：关加热+背光，唤醒后加热保持关闭
+- 菜单 SLEEP NOW / 自动休眠会关闭加热和背光，唤醒后恢复休眠前设定温度和加热状态
+- 休眠时 **NEXT 短按** 唤醒；NEXT 不再用按下沿唤醒，避免按下瞬间误触发。MENU/PREV 仍按下唤醒
 
 可修改参数：
 
@@ -468,9 +481,9 @@ power_ch224a_set_voltage_index(4U);   /* 直接指定档位 */
 
 | 按键 | 引脚 | 功能 |
 |---|---|---|
-| MENU / ENTER | PA15 | 设置菜单（长按 2 s 进入/返回，单击确认） |
-| PREV | PB3 | 上一页 / 菜单上移、减小 |
-| NEXT | PB4 | 下一页 / 菜单下移、增大 |
+| MENU / ENTER | PA15 | 非菜单短按轮换页面；长按 2 s 进入菜单；菜单内单击确认 |
+| PREV | PB3 | 短按关加热并休眠；长按深度休眠（关加热+屏幕）；菜单内上移、减小 |
+| NEXT | PB4 | 长按启动 Boost；短按取消 Boost；休眠时短按唤醒；菜单内下移、增大 |
 
 - 内部上拉，按下拉低
 - 20 ms 消抖
@@ -498,12 +511,24 @@ buttons_register_callback(BUTTON_MENU,
 
 当前按键回调：
 
-- [menu.c](src/menu.c:1)：MENU/PREV/NEXT 的 `CLICK`，PREV/NEXT 的 `REPEAT`；MENU 长按 2 s 由 `menu_update()` 轮询
-- [autoroll.c](src/autoroll.c:220)：PREV/NEXT 的 `CLICK` / `LONG_PRESS` / `REPEAT` 手动翻页；菜单打开时自动忽略
-- [powermanagement.c](src/powermanagement.c:1)：三个按键的 `PRESS` 唤醒
-- 回调表 24 项，当前已用 17 项
+- [menu.c](src/menu.c:1)：菜单打开时 MENU/PREV/NEXT 的 `CLICK`，PREV/NEXT 的 `REPEAT`
+- [main.c](src/main.c:46)：非菜单界面的 MENU/PREV/NEXT 仲裁
+- [onekeyboost.c](src/onekeyboost.c:1)：NEXT 长按启动 Boost、NEXT 短按取消 Boost
+- [powermanagement.c](src/powermanagement.c:1)：三个按键的 `PRESS` 唤醒、NEXT 短按休眠唤醒
+- autoroll 不再注册按键回调；没有定时自动翻页
 
-手动翻页会重置自动轮换计时，翻页后仍按设定间隔继续自动轮换。菜单打开时暂停自动轮换。
+非菜单界面按键：
+
+| 操作 | 功能 |
+|---|---|
+| MENU 短按 | 单按键轮换页面 |
+| MENU 长按 2 s | 进入菜单 |
+| NEXT 长按 | 启动 Boost |
+| NEXT 短按 | 取消 Boost；加热关闭时恢复加热；深度休眠第一次只唤醒屏幕；不翻页 |
+| PREV 短按 | 只关闭加热器，屏幕保持；进入 HEATER_OFF 状态 |
+| PREV 长按 | 深度休眠：关闭加热器和屏幕，唤醒后加热保持关闭 |
+
+菜单打开时，PREV/NEXT 仍用于菜单导航和数值调整。
 
 > PA15/PB3/PB4 在部分 AT32 型号上是 JTAG 引脚。AT32F421 使用 SWD 调试时这三个脚可作 GPIO；如果调试器占用了它们，需要把调试口配置为 SWD-only。
 
@@ -577,10 +602,13 @@ buttons_register_callback(BUTTON_MENU,
   - 默认 +100°C，范围 0~200°C
   - 若重复长按，只重新计时，不重复叠加
 - **温度突降自动 Boost**
+  - 只有当前温度 **低于设定温度** 时才允许自动 Boost
   - 正常加热时，温度在约 1 s 内相对峰值下降超过 `DROP TEMP`
   - 默认 20°C，范围 5~100°C
+  - 掉温需持续 **150 ms** 才确认，过滤单次采样尖峰
   - 自动抬高 `BOOST TEMP` 并切 BOOST 曲线
-- **PREV 短按**：退出 Boost，恢复原设定温度和原 PID 模式
+- **NEXT 短按**：退出 Boost，恢复原设定温度和原 PID 模式
+- **退出冷却**：手动/自动退出后 **5 s 内禁止掉温自动重入**，避免刚退出又立刻 Boost；NEXT 长按仍可手动立即重新进入
 - **超时自动退出**：默认 300 s，可设 10~1800 s
 - 菜单打开、热端校准、HMS、故障、休眠、加热关闭都会退出/禁止 Boost
 - Boost 期间阻止休眠计时，主界面显示 `BST` / `BOOST`
@@ -591,23 +619,24 @@ buttons_register_callback(BUTTON_MENU,
 BOOST
 ├── BOOST TEMP   温度增量
 ├── DROP TEMP    掉温触发阈值
-├── BOOST TIME   超时秒数
-└── SET STEP     设置步进 1~100°C，任意整数
+└── BOOST TIME   超时秒数
+
+SYSTEM
+├── START AUTOTUNE
+├── CANCEL TUNE
+├── TEMP STEP    设定温度步进 1~100°C
+├── TIME STEP    秒级时间步进 1~600s
+├── ...
 ```
 
 - 主界面热端温度和设定温度固定按 1°C 分度显示，不做额外取整
-- 所有单位是 °C 的设定值都用自定义设置步进调整：设定温度、休眠温度、保护温度、Boost 温度、掉温阈值、标定温度等
-- `SET STEP` 自己仍按 1°C 调整，范围 1~100°C
-- 时间、电压、PID 等非温度项保留原来的物理步进
-- 长按 NEXT 不再翻页；Boost 期间 PREV 只退出 Boost，不翻页
-
-调试命令：
-
-```text
-boost start
-boost stop
-boost status
-```
+- `TEMP STEP` 对所有单位为 `°C` 的温度项生效：设定温度、休眠温度、保护温度、Boost 温度、掉温阈值等
+- `TIME STEP` 只作用于单位为 `s` 的时间项（休眠时间、关加热时间、关屏时间、Boost 时间、保护时间等）
+- `TEMP STEP` / `TIME STEP` 自己始终按 1 调整
+- **双击 MENU**：直接打开 `TEMPERATURE -> SETPOINT` 编辑，NEXT/PREV 按 `TEMP STEP` 调整，MENU 确认并退出
+- 电压、PID、ms 级时间等其它项保留原来的物理步进
+- 长按 NEXT 启动 Boost；短按 NEXT 取消 Boost；非菜单界面 PREV/NEXT 不再翻页
+- 加热关闭（DISABLED/HEATER_OFF）时短按 NEXT 恢复加热；深度休眠的第一次 NEXT 只唤醒屏幕，第二次恢复加热
 
 ## 加热器输出
 
@@ -620,14 +649,15 @@ boost status
   - 计数时钟：120 MHz，ARR = 5999，CCR = 0~6000
   - 0%：CCR=0，PA8 恒低，Q6 关断
   - 100%：CCR=6000，PA8 恒高，Q6 导通
+  - 直接写 CCR，20 kHz 每周期的脉宽由占空比决定
   - 占空比分辨率约 0.017%
 - 保护模块故障时 `statemachine.c` 调用 `heater_force_off()`，下一拍 CCR=0。
 
-> 硬件注意：PA8 只驱动 Q8/Q5 栅极网络，不是直接接 24V PMOS 栅极。必须确认 Q5 的集电极/上拉能把 Q6 栅极可靠拉到 VCC 关断；20 kHz PWM 对栅极驱动和走线要求更高，建议用示波器确认 PA8 在 0% 时为高、100% 时为低。
+> 硬件注意：PA8 只驱动 Q8/Q5 栅极网络，不是直接接 24V PMOS 栅极。必须确认 Q5 的集电极/上拉能把 Q6 栅极可靠拉到 VCC 关断；如果控温阶段 MOS 仍然明显发热，需要用示波器看 Q6 栅极波形，重点检查栅极电阻、Q8/Q5 驱动能力和 PMOS 是否完全增强。
 
 ## 当前已实现
 
-- ADC1 三通道扫描，**100 Hz 消隐采样**；每 10 ms 先关加热 0.5 ms 再读取。
+- ADC1 三通道扫描，**200 Hz 消隐采样**；每 5 ms 先关加热 0.5 ms 再读取。
 - NTC 查表（100 kΩ / B=3950，10 kΩ 上拉分压）+ 热电偶冷端补偿。
 - 冷端实测偏高约 10°C：`TEMP_NTC_CAL_OFFSET_C = -10.0f` 直接修正。
 - 上电或 ADC 恢复后的初始热端温度直接继承冷端温度，避免出现 0°C/负温跳变。
@@ -635,14 +665,14 @@ boost status
 - 热电偶默认二次拟合 `T=-1.1948e-6*N^2+0.19073*N+23.78`；100~400°C 七点校准可生成 10 点查表。
 - 温度平滑：热电偶约 2 Hz 一阶低通，NTC 约 1.6 Hz 一阶低通；ADC 无效/NTC 故障时滤波器重新初始化。
 - 加热器保护：热电偶开路/短路、30 s 不升温、温度突变、严重失温、>500°C、温度数据无效、持续 100% 满功率 30 s；保护检测 1 kHz，故障锁存后下一拍立即切断 PWM。
-- PID 控制：标准曲线、boost 加强曲线、10 点温度增益自定义曲线；普通 PID 以 **100 Hz** 运行，输出由 20 kHz PWM 执行。
-- 热端校准：`SYSTEM -> TIP CAL` 或串口 `tcal`，100/150/200/250/300/350/400°C 七点，实测值生成 10 点曲线。
-- OneKeyBoost：NEXT 长按 +100°C/BOOST 曲线，1 s 内掉温超阈值自动 Boost，PREV 短按退出，默认 300 s 超时；设置步进可在菜单中设为 1~100°C 任意整数。
+- 热上电保护屏蔽：上电前 **5 s** 不判断温度突变和过温，避免热烙铁上电建立过程误报；5 s 后恢复检测。
+- PID 控制：标准曲线、boost 加强曲线、10 点温度增益自定义曲线；普通 PID 以 **200 Hz** 运行，输出由 20 kHz PWM 执行。
+- 热端校准：`SYSTEM -> TIP CAL`，100/150/200/250/300/350/400°C 七点，实测值生成 10 点曲线。
+- OneKeyBoost：NEXT 长按 +100°C/BOOST 曲线，1 s 内掉温超阈值自动 Boost，NEXT 短按退出，默认 300 s 超时；设置步进可在菜单中设为 1~100°C 任意整数。
 - PMOS 控制：PA8 / TMR1_CH1，**20 kHz 硬件 PWM**，故障时立即强制关断。
-- 串口调试控制台：PA9/PA10，115200 8N1，后台 1 kHz 处理，不影响 20 kHz 控制中断。
 - 状态机统一调度：HEATING / AUTOTUNE / DISABLED / FAULT；控制中断 20 kHz，后台任务 1 kHz。
-- ST7735S **160x80 横屏** 4-line SPI 显示驱动；主界面、温度/功率/电压/冷端曲线和自动轮换已实现。
-- 三按键：PA15 MENU / PB3 PREV / PB4 NEXT，20 ms 消抖，支持单击、长按和连发；PREV/NEXT 已接入手动翻页。
+- ST7735S **160x80 横屏** 4-line SPI 显示驱动；主界面、温度/功率/电压/冷端曲线和 MENU 短按单键轮换已实现。
+- 三按键：PA15 MENU / PB3 PREV / PB4 NEXT，20 ms 消抖，支持单击、长按和连发；非菜单界面由 MENU 短按轮换页面。
 - 设置菜单：MENU 长按 2 s，多级分类，10 点自定义 PID 曲线、10 点热电偶标定、休眠/电压/保护/UI 参数。
 - 蜂鸣器：PB5 / TMR3_CH2，非阻塞多音效；开机、按键、到温、休眠/深睡/关机、唤醒、故障、模式、菜单、整定和错误音；音量 0~100 可调。
 - 指示灯：PA6 / TMR3_CH1，运行时呼吸，待机/休眠慢闪，故障/HMS 快闪。
@@ -662,7 +692,7 @@ T = -1.1948e-6 * N^2 + 0.19073 * N + 23.78
 - 未启用标定表时使用该二次拟合
 - 启用 10 点标定表后改为 ADC 查表插值 + 冷端补偿
 
-C245 热电偶与加热驱动存在耦合，采样改为 **10 ms 周期 + 0.5 ms 消隐**：
+C245 热电偶与加热驱动存在耦合，采样改为 **5 ms 周期 + 0.5 ms 消隐**：
 
 ```text
 phase 0 .. 9   : 强制关加热，等待 0.5 ms
@@ -673,9 +703,9 @@ phase 11 .. 199: 保持 PWM
 因此：
 
 - 20 kHz 仍然是 TMR1 PWM 载波
-- 温度采样和 PID 更新为 **100 Hz**
-- 每个 10 ms 周期最大有效加热占空比约 95%
-- 自动整定同样以 100 Hz 推进
+- 温度采样和 PID 更新为 **200 Hz**
+- 每个 5 ms 周期最大有效加热占空比约 90%
+- 自动整定同样以 200 Hz 推进
 
 ### 热端校准
 
@@ -693,17 +723,12 @@ phase 11 .. 199: 保持 PWM
 4. 七点完成后生成 10 点 ADC->温度曲线，启用并保存到 EEPROM
 
 - UI：`SYSTEM -> TIP CAL`；PREV/NEXT 调整实测值，MENU 确认，长按 MENU 取消
-- 调试串口：
-  - `tcal start`
-  - `tcal actual 101.5`
-  - `tcal status`
-  - `tcal cancel`
 
 校准曲线在 100~400°C 内使用实测点，范围外按默认二次拟合平移延伸，避免室温附近被钳到 100°C。
 
 ## 温度平滑
 
-[temp.c](src/temp.c:350) 在 ADC 换算之后做一阶 IIR/EMA 平滑：
+[temp.c](src/temp.c:350) 在 ADC 换算之后做 **3 点中值 + 一阶 IIR/EMA** 平滑：
 
 ```c
 y_n = alpha * x_n + (1.0f - alpha) * y_last;
@@ -711,25 +736,27 @@ y_n = alpha * x_n + (1.0f - alpha) * y_last;
 
 | 信号 | 采样率 | alpha | 截止频率 | 说明 |
 |---|---:|---:|---:|---|
-| 热电偶烙铁头 | 100 Hz | 0.12 | 约 2 Hz | 消隐后采样，抑制残余耦合 |
-| NTC 冷端 | 100 Hz | 0.10 | 约 1.6 Hz | 冷端变化慢 |
+| 热电偶烙铁头 | 200 Hz | 0.06 | 约 2 Hz | 消隐后采样，抑制残余耦合 |
+| NTC 冷端 | 200 Hz | 0.05 | 约 1.6 Hz | 冷端变化慢 |
 
 - 首次有效采样直接取原始值，避免上电从 0°C 慢慢爬升
 - ADC 无效或 NTC 开路/短路时重置滤波器
-- 消隐采样已经去掉了大部分 PWM 耦合，再用 2 Hz 平滑压制噪声
+- 消隐采样已经去掉了大部分 PWM 耦合，再用 3 点中值 + 2 Hz 平滑压制噪声
+- ADC 采样时间从 41.5 周期提高到 **71.5 周期**（20 MHz 下约 4.2 µs），降低采样噪声
+- 主界面温度显示增加 ±0.7°C 回差，避免在整数边界来回跳 1°C
 
 ## 状态机与 20 kHz 调度
 
 [statemachine.c](src/statemachine.c:1) 是唯一的模块调度者：
 
 - **20 kHz 控制中断**：TMR1 更新中断，50 µs 周期
-- **100 Hz 测温/PID**：每 10 ms 消隐 0.5 ms 后采样
-- **1 kHz 保护/快照**：verifyheater、快照、调试串口
+- **200 Hz 测温/PID**：每 5 ms 消隐 0.5 ms 后采样
+- **1 kHz 保护/快照**：verifyheater、快照
 
 控制中断顺序：
 
 ```text
-phase 0 关加热 -> phase 10 ADC -> 温度 -> PID(100 Hz) -> 保护(1 kHz) -> PWM 恢复
+phase 0 关加热 -> phase 10 ADC -> 温度 -> PID(200 Hz) -> 保护(1 kHz) -> PWM 恢复
 ```
 
 1 kHz 慢任务：
@@ -737,7 +764,6 @@ phase 0 关加热 -> phase 10 ADC -> 温度 -> PID(100 Hz) -> 保护(1 kHz) -> P
 | 时隙 | 任务 | 频率 |
 |---|---|---|
 | tick 0 | verifyheater 保护 | 1 kHz |
-| tick 10 | 调试快照 | 1 kHz |
 
 主循环：
 
@@ -745,7 +771,12 @@ phase 0 关加热 -> phase 10 ADC -> 温度 -> PID(100 Hz) -> 保护(1 kHz) -> P
 sm_init();
 while(1)
 {
-  sm_slow_update();
+  buttons_update(now_ms);
+  power_update(now_ms);
+  buzzer_task(now_ms);
+  led_task(now_ms);
+  menu_update(now_ms);
+  autoroll_update(now_ms);
   wk_delay_ms(SM_SLOW_PERIOD_MS);
 }
 ```
@@ -756,41 +787,20 @@ while(1)
 - `faultreset` 清除故障后保持 `DISABLED`，不会自动恢复加热
 - 自动整定期间拒绝改设定温度和曲线
 - 温度无效时关闭输出并复位 PID，避免恢复时微分冲击
-- 串口命令通过带临界区的状态机 API 修改控制状态，不直接操作 PID/加热器
-- 主循环的串口输出不会阻塞控制中断
-
-### 验证 20 kHz 中断预算
-
-串口输入：
-
-```text
-perf
-```
-
-输出示例：
-
-```text
-perf: tick=123456 ms=6172 last=31 us max=38 us budget=50 us
-```
-
-- `last` / `max` 是控制中断执行时间，包含 ADC、温度、PID、保护、PWM 和快照。
-- `max` 必须小于 50 µs；超过会打印 `WARN: 20 kHz over budget`。
-- `perf reset` 清零最大值，方便重新测量。
-- 芯片无硬件 FPU，温度/PID 使用软件浮点；如果实测超预算，优先降低 NTC 频率或把 PID 改为定点。
 
 ## PID 曲线与整定（模块级）
 
-以下 API 由状态机在内部调用；一般通过串口 `setpoint` / `mode` / `autotune` 操作。
+以下 API 由状态机在内部调用，菜单/按键负责修改控制状态。
 
 ```c
 /* 初始化 */
 pid_init();
 pid_set_setpoint(300.0f);
 
-/* 普通 PID：100 Hz，固定 10 ms 周期 */
+/* 普通 PID：200 Hz，固定 5 ms 周期 */
 float power = pid_update_fixed(tip_c, temp_valid, 0.01f);
 
-/* 自动整定（100 Hz 推进，10%/90% PWM 双电平激励） */
+/* 自动整定（200 Hz 推进，10%/90% PWM 双电平激励） */
 pid_autotune_start(300.0f);
 
 /* 整定完成后读取结果 */
@@ -822,73 +832,23 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 
 自动整定默认在 300°C 附近进行，10%/90% 两个 PWM 电平需要能分别让温度下降到目标以下和上升到目标以上；如果要在其他温度整定且不收敛，可调整 `pid.c` 的 `PID_AT_PWM_LOW` / `PID_AT_PWM_HIGH`。
 
-## 串口调试
+超调抑制：
 
-- PA9 = USART1_TX，PA10 = USART1_RX，115200 8N1
-- `pio device monitor` 打开控制台
-- 输入 `help` 查看内置命令，`list` 查看已注册触发函数，`commands` 查看已注册带参数命令
+- 默认 PID 为 `Kp=1.2 / Ki=0.04 / Kd=1.2`
+- 设定温度前馈：按 `0.05 %/°C` 给出接近稳态的基础功率（最高 30%），最后 5°C 线性收敛到 0
+- 最后 10°C 增加功率下限：`4 %/°C`（10°C→40%，5°C→20%，1°C→4%），避免满功率冲过头
+- 积分允许负向修正到 -50%；过冲超过 0.5°C 时清掉正积分，不再维持小功率
+- 任何设定温度变化都会调用 `pid_reset_runtime()`，清空积分、微分滤波、上次温度、输出和时间基准
+- 积分分离：误差超过 ±30°C 时停止积分累积
+- 距离目标超过 15°C 时直接 **100% 满功率升温**；进入最后 15°C 才交回 PID
+- 自动整定改用 `Kp=Ku/2.8`、`Ti=2.8·Pu`，并限制整定后的初始积分不超过 35%
 
-常用命令：
-
-```text
-help                    帮助
-list                    已注册的可触发函数
-raw                     读取一次 ADC 原始值和温度
-temp                    读取一次温度
-console on 500          每 500 ms 输出 ADC/温度
-console off             停止周期输出
-echo on|off             本地回显
-setpoint 300            设置目标温度
-mode std|boost|custom   切换 PID 曲线
-autotune 300            启动自动整定
-tcal start              启动 100~400°C 七点热端校准
-tcal actual 101.5       提交当前点外部实测温度
-tcal status             查看校准状态
-tcal cancel             取消校准
-boost start             启动 OneKeyBoost
-boost stop              退出 OneKeyBoost
-boost status            查看 Boost 状态
-pid                     打印 PID 状态
-state                   打印系统状态/功率/故障
-perf [reset]            查看/清零 20 kHz 中断耗时
-run faultreset          清除保护故障
-heateroff / heateron    强制禁用/恢复加热输出
-run boost / run standard  切换曲线（触发函数形式）
-autotunestop            取消自动整定
-```
-
-`faultreset` 清除故障后会保持加热禁用，需再发送 `heateron` 才恢复 PID 输出，避免故障刚清除就立刻满功率加热。自动整定期间 `setpoint` / `mode` 会被拒绝。
-
-`tcal start` 后串口会依次提示 100/150/200/250/300/350/400°C；温度稳定并完成 1 s ADC 平均后，用 `tcal actual <实测值>` 提交，七点完成后自动生成并保存 10 点曲线。
-
-调试串口发送为非阻塞：TX 环形缓冲满时丢弃新字节，不会拖慢 20 kHz 控制中断。
-
-注册新的可触发函数（无参数）：
-
-```c
-static void my_action(void)
-{
-  /* ... */
-}
-
-debug_register_trigger("myaction", "my debug action", my_action);
-```
-
-之后串口输入 `run myaction` 或直接输入 `myaction` 即可执行。名称/帮助字符串必须是静态生命周期字符串。
-
-带参数命令可以用 `debug_register_command()` 注册：
-
-```c
-static void my_cmd(int argc, char **argv) { /* ... */ }
-debug_register_command("mycmd", "mycmd <arg>", my_cmd);
-```
-
-`statemachine.c` 在 1 kHz 后台 `sm_slow_update()` 中复制控制快照，再调用 `debug_update(&sm_debug_data.adc, &sm_debug_data.temp, sm_debug_data.now_ms)`；控制中断只写快照，不直接处理串口。
+> 旧 EEPROM 里保存的自动整定曲线不会被自动改写；烧录后建议重新执行一次 `START AUTOTUNE`，或恢复默认设置后再整定。
 
 ## 迁移说明
 
 - 启动文件、链接脚本、CMSIS、AT32F421 外设驱动由 PlatformIO 的 `at32firmlib` 框架提供，未重复复制。
-- 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；调试格式化使用 `vsnprintf`，因此 newlib 的 syscall/heap 桩保留。
+- 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 20 kHz 控制中断优先速度：`platformio.ini` 用 `build_unflags = -Os` + `build_flags = -O2` 覆盖默认优化级别，程序区 62 KB（最后 2 KB 留给参数区），当前 Flash 约 61 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
@@ -896,7 +856,8 @@ debug_register_command("mycmd", "mycmd <arg>", my_cmd);
 
 - NTC 分压默认按“10 kΩ 上拉到 VREF、NTC 下拉到 GND”计算；实际相反时修改 `src/temp.c` 的 `TEMP_NTC_CONNECT_TO_GND`。
 - 输入电压默认按 **10 kΩ / 1 kΩ 分压（VCC/11）**；实际电阻不同时修改 `powermanagement.h` 的 `POWER_VIN_DIVIDER_R1/R2`。
-- 震动开关默认 PB1 静止为高、震动拉低；代码按“电平变化”判震动，不依赖静态极性。
+- 震动开关默认 PB1 静止为高、震动拉低；只有低电平稳定 **30 ms** 才判为一次震动，避免抖动误重置休眠计时。
+- 使用状态也会保持唤醒：加热功率 ≥30% 或热端偏离设定温度 ≥5°C 时，自动重置休眠计时。
 - CH224A 默认地址 0x22/0x23 自动探测，电压寄存器 0x0A；如果模块地址或寄存器不同，修改 `powermanagement.h` 的 `POWER_CH224A_*`。
-- 热电偶默认使用 `T=-1.1948e-6*N^2+0.19073*N+23.78`，上板后优先用 `tcal` 或 `SYSTEM -> TIP CAL` 做 100~400°C 七点校准；也可在 `TEMPERATURE -> TEMP CAL` 手动录入 10 点 `ADC/温度` 并打开 `CAL ENABLE`。
+- 热电偶默认使用 `T=-1.1948e-6*N^2+0.19073*N+23.78`，上板后优先用 `SYSTEM -> TIP CAL` 做 100~400°C 七点校准；也可在 `TEMPERATURE -> TEMP CAL` 手动录入 10 点 `ADC/温度` 并打开 `CAL ENABLE`。
 - 保护阈值集中在 `src/verifyheater.c` 顶部宏，按实际加热器调整。

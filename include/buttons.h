@@ -10,6 +10,7 @@ extern "C" {
 #define BUTTON_DEBOUNCE_MS              (20U)
 #define BUTTON_LONG_PRESS_MS            (2000U)
 #define BUTTON_REPEAT_MS                (200U)
+#define BUTTON_DOUBLE_CLICK_MS          (350U)
 
 typedef enum
 {
@@ -24,6 +25,7 @@ typedef enum
   BUTTON_EVENT_PRESS = 0,
   BUTTON_EVENT_RELEASE,
   BUTTON_EVENT_CLICK,
+  BUTTON_EVENT_DOUBLE_CLICK,
   BUTTON_EVENT_LONG_PRESS,
   BUTTON_EVENT_REPEAT,
   BUTTON_EVENT_COUNT

@@ -1,3 +1,4 @@
+#pragma GCC optimize("O2")
 /**
   **************************************************************************
   * @file     statemachine.c
@@ -7,18 +8,17 @@
   *   ADC -> 温度 -> PID -> 保护(1 kHz) -> 20 kHz PWM -> 快照
   *
   * 后台环（主循环，1 kHz）：
-  *   读取控制快照 -> 调试串口命令/数据流
+  *   读取控制快照 -> UI / 按键 / 保护任务
   *
   * 分工：
-  *   - 20 kHz：ADC、热电偶温度、PID、PWM、状态切换、故障切断
-  *   - 1 kHz：verifyheater 时间型保护、自动整定步骤、调试快照
-  *   - 100 Hz：NTC 冷端温度（物理变化慢）
-  *   - 1 kHz：串口控制台
+  *   - 20 kHz：PWM、状态切换、故障切断
+  *   - 200 Hz：ADC、热电偶温度、PID
+  *   - 1 kHz：verifyheater 时间型保护、自动整定步骤、快照
+  *   - 1 kHz：主循环调度
   *
   * 并发：
   *   - TMR1 更新中断优先级 0，负责全部控制状态；
-  *   - 主循环只读快照，命令通过带临界区的 API 修改控制状态；
-  *   - USART1 中断只访问调试环形缓冲。
+  *   - 主循环只读快照，命令通过带临界区的 API 修改控制状态。
   **************************************************************************
   */
 
@@ -28,7 +28,6 @@
 #include "verifyheater.h"
 #include "pid.h"
 #include "heater.h"
-#include "debug.h"
 #include "hms.h"
 #include "at32f421_conf.h"
 #include "wk_system.h"
@@ -43,11 +42,11 @@
 /*
  * C245 热电偶与加热驱动存在耦合：
  *   每个测量周期先关加热 0.5 ms，再采样，然后恢复 PWM。
- *   测量周期 10 ms（100 Hz），其中 0.5 ms 消隐，9.5 ms 加热。
+ *   测量周期 5 ms（200 Hz），其中 0.5 ms 消隐，4.5 ms 加热。
  */
 #define SM_HEATER_BLANK_MS              (0.5f)
 #define SM_HEATER_BLANK_TICKS           ((uint8_t)(SM_HEATER_BLANK_MS * (float)SM_TICKS_PER_MS))
-#define SM_TEMP_SAMPLE_MS               (10U)
+#define SM_TEMP_SAMPLE_MS               (5U)
 #define SM_TEMP_SAMPLE_TICKS            (SM_TEMP_SAMPLE_MS * SM_TICKS_PER_MS)
 #define SM_SAMPLE_DT_S                  ((float)SM_TEMP_SAMPLE_MS / 1000.0f)
 
@@ -84,7 +83,6 @@ typedef struct
   pid_status_t pid;
 } sm_snapshot_t;
 
-/* ============================ 内部状态 ============================ */
 static sm_state_t sm_state;
 static adc_raw_data_t sm_adc;
 static temp_data_t sm_temp;
@@ -102,35 +100,15 @@ static float sm_autotune_output;
 static volatile uint16_t sm_isr_last_us;
 static volatile uint16_t sm_isr_max_us;
 
-/* 控制中断写，主循环在临界区内复制 */
+
 static volatile sm_snapshot_t sm_snapshot;
 
-/* 主循环调试副本 */
-static sm_snapshot_t sm_debug_data;
 
-/* ============================ 内部函数声明 ============================ */
 static void sm_fast_update(void);
 static void sm_timer_init(void);
 static void sm_capture_snapshot(void);
 static uint32_t sm_critical_enter(void);
 static void sm_critical_exit(uint32_t primask);
-static void sm_register_debug(void);
-static void sm_debug_trigger_pidreset(void);
-static void sm_debug_trigger_faultreset(void);
-static void sm_debug_trigger_boost(void);
-static void sm_debug_trigger_standard(void);
-static void sm_debug_trigger_heater_off(void);
-static void sm_debug_trigger_heater_on(void);
-static void sm_debug_trigger_autotune_stop(void);
-static void sm_debug_cmd_setpoint(int argc, char **argv);
-static void sm_debug_cmd_mode(int argc, char **argv);
-static void sm_debug_cmd_autotune(int argc, char **argv);
-static void sm_debug_cmd_pid(int argc, char **argv);
-static void sm_debug_cmd_state(int argc, char **argv);
-static void sm_debug_cmd_perf(int argc, char **argv);
-static uint8_t sm_streq(const char *a, const char *b);
-
-/* ============================ 工具函数 ============================ */
 static uint32_t sm_critical_enter(void)
 {
   uint32_t primask = __get_PRIMASK();
@@ -161,62 +139,6 @@ static uint8_t sm_round_power(float power)
   return (uint8_t)(power + 0.5f);
 }
 
-static uint8_t sm_streq(const char *a, const char *b)
-{
-  char ca;
-  char cb;
-
-  if((a == NULL) || (b == NULL))
-  {
-    return 0U;
-  }
-
-  while((*a != '\0') && (*b != '\0'))
-  {
-    ca = *a;
-    cb = *b;
-
-    if((ca >= 'A') && (ca <= 'Z'))
-    {
-      ca = (char)(ca + ('a' - 'A'));
-    }
-
-    if((cb >= 'A') && (cb <= 'Z'))
-    {
-      cb = (char)(cb + ('a' - 'A'));
-    }
-
-    if(ca != cb)
-    {
-      return 0U;
-    }
-
-    a++;
-    b++;
-  }
-
-  return ((*a == '\0') && (*b == '\0')) ? 1U : 0U;
-}
-
-const char *sm_state_name(sm_state_t state)
-{
-  switch(state)
-  {
-    case SM_STATE_INIT:
-      return "INIT";
-    case SM_STATE_HEATING:
-      return "HEATING";
-    case SM_STATE_AUTOTUNE:
-      return "AUTOTUNE";
-    case SM_STATE_DISABLED:
-      return "DISABLED";
-    case SM_STATE_FAULT:
-      return "FAULT";
-    default:
-      return "UNKNOWN";
-  }
-}
-
 static void sm_capture_snapshot(void)
 {
   pid_status_t pid_status;
@@ -236,7 +158,7 @@ static void sm_capture_snapshot(void)
   sm_snapshot.pid = pid_status;
 }
 
-/** 20 kHz 控制中断，必须小于 50 µs */
+
 static void sm_fast_update(void)
 {
   float pid_output;
@@ -247,26 +169,26 @@ static void sm_fast_update(void)
   uint32_t isr_us;
 
   sm_fast_sequence++;
-  start_cycles = SysTick->VAL;
+  start_cycles = ((SysTick_Type *) ((0xE000E000UL) + 0x0010UL) )->VAL;
 
-  /*
-   * C245 消隐采样：
-   *   phase 0             -> 强制关加热
-   *   phase BLANK_TICKS   -> 已关 0.5 ms，读取 ADC/PID/恢复 PWM
-   *   其余 phase          -> 保持上一拍 PWM
-   */
+
+
+
+
+
+
   if(sm_sample_phase == 0U)
   {
     heater_force_off();
   }
 
-  if(sm_sample_phase == SM_HEATER_BLANK_TICKS)
+  if(sm_sample_phase == ((uint8_t)((0.5f) * (float)((20000U) / 1000U))))
   {
-    /* 1. 三路 ADC + 温度（加热已关闭 0.5 ms） */
+
     adc_read_all(&sm_adc);
     temp_update_fast(&sm_adc, &sm_temp, 1U);
 
-    /* 2. 状态同步 */
+
     if((sm_state == SM_STATE_HEATING) && (pid_is_autotuning() != 0U))
     {
       sm_state = SM_STATE_AUTOTUNE;
@@ -281,7 +203,7 @@ static void sm_fast_update(void)
       sm_state = SM_STATE_DISABLED;
     }
 
-    /* 3. 100 Hz PID / 自动整定 */
+
     switch(sm_state)
     {
       case SM_STATE_HEATING:
@@ -322,7 +244,7 @@ static void sm_fast_update(void)
       power = 0U;
     }
 
-    /* 4. 采样结束后恢复 20 kHz PWM */
+
     if(verifyheater_is_fault() != 0U)
     {
       sm_state = SM_STATE_FAULT;
@@ -337,8 +259,8 @@ static void sm_fast_update(void)
     }
   }
 
-  /* 5. 保护 1 kHz；故障时下一拍立即切断 */
-  if(sm_tick_in_ms == SM_PROT_PHASE)
+
+  if(sm_tick_in_ms == (0U))
   {
     verifyheater_set_heater_power(sm_power);
     verifyheater_update(&sm_temp, &sm_adc, sm_now_ms);
@@ -352,17 +274,17 @@ static void sm_fast_update(void)
     pid_reset();
   }
 
-  /* 6. 1 kHz 快照（放在耗时统计之前，把快照开销也算进中断时间） */
-  if(sm_tick_in_ms == SM_SNAPSHOT_PHASE)
+
+  if(sm_tick_in_ms == (10U))
   {
     sm_capture_snapshot();
   }
 
-  /* 7. 中断耗时统计 */
-  end_cycles = SysTick->VAL;
+
+  end_cycles = ((SysTick_Type *) ((0xE000E000UL) + 0x0010UL) )->VAL;
   delta_cycles = (start_cycles >= end_cycles) ?
                  (start_cycles - end_cycles) :
-                 ((SysTick->LOAD - end_cycles) + start_cycles + 1U);
+                 ((((SysTick_Type *) ((0xE000E000UL) + 0x0010UL) )->LOAD - end_cycles) + start_cycles + 1U);
 
   if(ticks_count_us != 0U)
   {
@@ -380,16 +302,16 @@ static void sm_fast_update(void)
       sm_isr_max_us = (uint16_t)isr_us;
     }
 
-    if(sm_tick_in_ms == SM_SNAPSHOT_PHASE)
+    if(sm_tick_in_ms == (10U))
     {
       sm_snapshot.isr_last_us = sm_isr_last_us;
       sm_snapshot.isr_max_us = sm_isr_max_us;
     }
   }
 
-  /* 8. 采样周期计数 */
+
   sm_sample_phase++;
-  if(sm_sample_phase >= SM_TEMP_SAMPLE_TICKS)
+  if(sm_sample_phase >= (SM_TEMP_SAMPLE_MS * SM_TICKS_PER_MS))
   {
     sm_sample_phase = 0U;
   }
@@ -397,34 +319,34 @@ static void sm_fast_update(void)
   sm_fast_count++;
 
   sm_tick_in_ms++;
-  if(sm_tick_in_ms >= SM_TICKS_PER_MS)
+  if(sm_tick_in_ms >= ((20000U) / 1000U))
   {
     sm_tick_in_ms = 0U;
     sm_now_ms++;
   }
 }
 
-/**
-  * @brief  TMR1 更新中断：20 kHz 控制节拍
-  */
+
+
+
 void TMR1_BRK_OVF_TRG_HALL_IRQHandler(void)
 {
-  if(tmr_interrupt_flag_get(TMR1, TMR_OVF_FLAG) != RESET)
+  if(tmr_interrupt_flag_get(((tmr_type *) ((((uint32_t)0x40000000) + 0x10000) + 0x2C00)), ((uint32_t)0x000001)) != RESET)
   {
-    tmr_flag_clear(TMR1, TMR_OVF_FLAG);
+    tmr_flag_clear(((tmr_type *) ((((uint32_t)0x40000000) + 0x10000) + 0x2C00)), ((uint32_t)0x000001));
     sm_fast_update();
   }
 }
 
 static void sm_timer_init(void)
 {
-  /* TMR1 PWM 已在 heater_init() 启动，这里只使能 20 kHz 更新中断 */
-  tmr_flag_clear(TMR1, TMR_OVF_FLAG);
-  tmr_interrupt_enable(TMR1, TMR_OVF_INT, TRUE);
+
+  tmr_flag_clear(((tmr_type *) ((((uint32_t)0x40000000) + 0x10000) + 0x2C00)), ((uint32_t)0x000001));
+  tmr_interrupt_enable(((tmr_type *) ((((uint32_t)0x40000000) + 0x10000) + 0x2C00)), ((uint32_t)0x000001), TRUE);
   nvic_irq_enable(TMR1_BRK_OVF_TRG_HALL_IRQn, 0, 0);
 }
 
-/* ============================ 对外 API ============================ */
+
 
 void sm_init(void)
 {
@@ -433,10 +355,8 @@ void sm_init(void)
   verifyheater_init();
 
   pid_init();
-  pid_set_setpoint(SM_DEFAULT_SETPOINT_C);
+  pid_set_setpoint((300.0f));
   pid_set_mode(PID_MODE_STANDARD);
-
-  sm_register_debug();
 
   sm_state = SM_STATE_HEATING;
   sm_power = 0U;
@@ -444,20 +364,11 @@ void sm_init(void)
   sm_fast_count = 0U;
   sm_tick_in_ms = 0U;
   sm_sample_phase = 0U;
-  sm_autotune_output = SM_AUTOTUNE_SEED_POWER;
+  sm_autotune_output = (90.0f);
   sm_isr_last_us = 0U;
   sm_isr_max_us = 0U;
 
   sm_capture_snapshot();
-
-#if SM_AUTOTUNE_ON_BOOT
-  if(pid_autotune_start(SM_DEFAULT_SETPOINT_C) != 0U)
-  {
-    sm_state = SM_STATE_AUTOTUNE;
-    sm_autotune_output = SM_AUTOTUNE_SEED_POWER;
-  }
-#endif
-
   sm_timer_init();
 }
 
@@ -467,14 +378,14 @@ void sm_heater_watchdog_init(void)
   sm_wd_stall_loops = 0U;
   sm_wd_tripped = 0U;
 
-#if SM_ENABLE_HARDWARE_WDT
+
   wdt_register_write_enable(TRUE);
   wdt_divider_set(WDT_CLK_DIV_64);
-  wdt_reload_value_set(SM_WDT_RELOAD_VALUE);
+  wdt_reload_value_set((2499U));
   wdt_counter_reload();
   wdt_enable();
   wdt_counter_reload();
-#endif
+
 }
 
 void sm_heater_watchdog_task(void)
@@ -491,7 +402,7 @@ void sm_heater_watchdog_task(void)
     sm_wd_stall_loops++;
   }
 
-  if((sm_wd_stall_loops >= SM_HEATER_WD_STALL_LOOPS) &&
+  if((sm_wd_stall_loops >= (80U)) &&
      (sm_wd_tripped == 0U))
   {
     sm_wd_tripped = 1U;
@@ -505,23 +416,12 @@ void sm_heater_watchdog_task(void)
     hms_set_fatal(HMS_CODE_HEATER_WD);
   }
 
-  /*
-   * 主循环始终重装 WDT：
-   * - 若存在上一次运行遗留的硬件 WDT，避免启动后再次复位
-   * - 默认未启用新 WDT，重装命令无副作用
-   */
+
+
+
+
+
   wdt_counter_reload();
-}
-
-void sm_slow_update(void)
-{
-  uint32_t primask = sm_critical_enter();
-
-  sm_debug_data = sm_snapshot;
-
-  sm_critical_exit(primask);
-
-  debug_update(&sm_debug_data.adc, &sm_debug_data.temp, sm_debug_data.now_ms);
 }
 
 sm_state_t sm_get_state(void)
@@ -533,7 +433,9 @@ void sm_get_status(sm_status_t *status)
 {
   uint32_t primask;
 
-  if(status == NULL)
+  if(status == 
+              ((void *)0)
+                  )
   {
     return;
   }
@@ -587,7 +489,7 @@ uint8_t sm_set_heater_enabled(uint8_t enabled)
 
     sm_state = SM_STATE_HEATING;
     sm_power = 0U;
-    sm_autotune_output = SM_AUTOTUNE_SEED_POWER;
+    sm_autotune_output = (90.0f);
     pid_reset();
     sm_critical_exit(primask);
     return 1U;
@@ -659,7 +561,7 @@ uint8_t sm_start_autotune(float setpoint_c)
   if(pid_autotune_start(setpoint_c) != 0U)
   {
     sm_state = SM_STATE_AUTOTUNE;
-    sm_autotune_output = SM_AUTOTUNE_SEED_POWER;
+    sm_autotune_output = (90.0f);
     result = 1U;
   }
 
@@ -763,234 +665,4 @@ verifyheater_fault_t sm_get_fault(void)
 
   sm_critical_exit(primask);
   return fault;
-}
-
-/* ============================ 串口调试注册 ============================ */
-
-static void sm_register_debug(void)
-{
-  (void)debug_register_trigger("pidreset", "reset PID runtime", sm_debug_trigger_pidreset);
-  (void)debug_register_trigger("faultreset", "clear fault, heater disabled", sm_debug_trigger_faultreset);
-  (void)debug_register_trigger("boost", "use boost curve", sm_debug_trigger_boost);
-  (void)debug_register_trigger("standard", "use standard curve", sm_debug_trigger_standard);
-  (void)debug_register_trigger("heateroff", "disable heater output", sm_debug_trigger_heater_off);
-  (void)debug_register_trigger("heateron", "enable heater output", sm_debug_trigger_heater_on);
-  (void)debug_register_trigger("autotunestop", "cancel auto tune", sm_debug_trigger_autotune_stop);
-
-  (void)debug_register_command("setpoint", "setpoint <C>", sm_debug_cmd_setpoint);
-  (void)debug_register_command("mode", "mode std|boost|custom", sm_debug_cmd_mode);
-  (void)debug_register_command("autotune", "autotune [setpoint C]", sm_debug_cmd_autotune);
-  (void)debug_register_command("pid", "print PID status", sm_debug_cmd_pid);
-  (void)debug_register_command("state", "print system state", sm_debug_cmd_state);
-  (void)debug_register_command("perf", "perf [reset]", sm_debug_cmd_perf);
-}
-
-static void sm_debug_trigger_pidreset(void)
-{
-  sm_reset_pid();
-  debug_write("pid reset\r\n");
-}
-
-static void sm_debug_trigger_faultreset(void)
-{
-  (void)sm_clear_fault();
-  debug_write("fault cleared, heater disabled (use heateron)\r\n");
-}
-
-static void sm_debug_trigger_boost(void)
-{
-  if(sm_set_pid_mode(PID_MODE_BOOST) != 0U)
-  {
-    debug_write("mode=boost\r\n");
-  }
-  else
-  {
-    debug_write("busy: autotune running\r\n");
-  }
-}
-
-static void sm_debug_trigger_standard(void)
-{
-  if(sm_set_pid_mode(PID_MODE_STANDARD) != 0U)
-  {
-    debug_write("mode=standard\r\n");
-  }
-  else
-  {
-    debug_write("busy: autotune running\r\n");
-  }
-}
-
-static void sm_debug_trigger_heater_off(void)
-{
-  (void)sm_set_heater_enabled(0U);
-  debug_write("heater disabled\r\n");
-}
-
-static void sm_debug_trigger_heater_on(void)
-{
-  if(sm_set_heater_enabled(1U) != 0U)
-  {
-    debug_write("heater enabled\r\n");
-  }
-  else
-  {
-    debug_write("heater enable rejected: fault latched (use faultreset)\r\n");
-  }
-}
-
-static void sm_debug_trigger_autotune_stop(void)
-{
-  sm_cancel_autotune();
-  debug_write("autotune cancelled\r\n");
-}
-
-static void sm_debug_cmd_setpoint(int argc, char **argv)
-{
-  if(argc < 2)
-  {
-    debug_write("usage: setpoint <C>\r\n");
-    return;
-  }
-
-  if(sm_set_setpoint((float)atoi(argv[1])) != 0U)
-  {
-    debug_printf("setpoint=%d C\r\n", (int)sm_get_setpoint());
-  }
-  else
-  {
-    debug_write("busy: autotune running\r\n");
-  }
-}
-
-static void sm_debug_cmd_mode(int argc, char **argv)
-{
-  if(argc < 2)
-  {
-    debug_write("usage: mode std|boost|custom\r\n");
-    return;
-  }
-
-  if((sm_streq(argv[1], "std") != 0U) || (sm_streq(argv[1], "standard") != 0U))
-  {
-    if(sm_set_pid_mode(PID_MODE_STANDARD) != 0U)
-    {
-      debug_write("mode=standard\r\n");
-    }
-    else
-    {
-      debug_write("busy: autotune running\r\n");
-    }
-  }
-  else if(sm_streq(argv[1], "boost") != 0U)
-  {
-    if(sm_set_pid_mode(PID_MODE_BOOST) != 0U)
-    {
-      debug_write("mode=boost\r\n");
-    }
-    else
-    {
-      debug_write("busy: autotune running\r\n");
-    }
-  }
-  else if(sm_streq(argv[1], "custom") != 0U)
-  {
-    if(sm_set_pid_mode(PID_MODE_CUSTOM) != 0U)
-    {
-      debug_write("mode=custom\r\n");
-    }
-    else
-    {
-      debug_write("busy: autotune running\r\n");
-    }
-  }
-  else
-  {
-    debug_write("usage: mode std|boost|custom\r\n");
-  }
-}
-
-static void sm_debug_cmd_autotune(int argc, char **argv)
-{
-  float setpoint = sm_get_setpoint();
-
-  if(argc >= 2)
-  {
-    setpoint = (float)atoi(argv[1]);
-  }
-
-  if(sm_start_autotune(setpoint) != 0U)
-  {
-    debug_printf("autotune start, sp=%d C\r\n", (int)setpoint);
-  }
-  else
-  {
-    debug_write("autotune rejected (state/fault/temp)\r\n");
-  }
-}
-
-static void sm_debug_cmd_pid(int argc, char **argv)
-{
-  float error_c;
-
-  (void)argc;
-  (void)argv;
-
-  error_c = sm_debug_data.pid.setpoint_c - sm_debug_data.temp.tip_c;
-
-  debug_printf("state=%s sp=%d temp=", sm_state_name(sm_debug_data.state),
-               (int)sm_debug_data.pid.setpoint_c);
-  debug_write_float(sm_debug_data.temp.tip_c, 2);
-  debug_printf("C out=%d%% mode=%d at=%d err=",
-               (int)sm_debug_data.pid.output,
-               (int)sm_debug_data.pid.mode,
-               (int)sm_debug_data.pid.autotune_state);
-  debug_write_float(error_c, 2);
-  debug_write("C\r\n");
-}
-
-static void sm_debug_cmd_state(int argc, char **argv)
-{
-  (void)argc;
-  (void)argv;
-
-  debug_printf("state=%s power=%u heater=%u fault=%u at=%d temp=",
-               sm_state_name(sm_debug_data.state),
-               (unsigned)sm_debug_data.power,
-               (unsigned)sm_debug_data.heater_on,
-               (unsigned)sm_debug_data.fault,
-               (int)sm_debug_data.pid.autotune_state);
-  debug_write_float(sm_debug_data.temp.tip_c, 2);
-  debug_write("C\r\n");
-}
-
-static void sm_debug_cmd_perf(int argc, char **argv)
-{
-  uint16_t max_us;
-
-  if((argc >= 2) && (sm_streq(argv[1], "reset") != 0U))
-  {
-    uint32_t primask = sm_critical_enter();
-    sm_isr_max_us = 0U;
-    sm_critical_exit(primask);
-    sm_debug_data.isr_max_us = 0U;
-  }
-
-  max_us = sm_debug_data.isr_max_us;
-
-  debug_printf("perf: tick=%u ms=%u last=%u us max=%u us budget=%u us\r\n",
-               (unsigned)sm_debug_data.fast_count,
-               (unsigned)sm_debug_data.now_ms,
-               (unsigned)sm_debug_data.isr_last_us,
-               (unsigned)max_us,
-               (unsigned)SM_FAST_PERIOD_US);
-
-  if(max_us > SM_FAST_PERIOD_US)
-  {
-    debug_write("WARN: 20 kHz over budget, reduce ISR work\r\n");
-  }
-  else if(max_us > (SM_FAST_PERIOD_US - 2U))
-  {
-    debug_write("WARN: 20 kHz margin < 2 us\r\n");
-  }
 }

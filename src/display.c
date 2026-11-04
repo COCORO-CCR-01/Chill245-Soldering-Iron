@@ -36,12 +36,12 @@
 #define DISPLAY_SPI                     SPI1
 #define DISPLAY_SPI_CLOCK               CRM_SPI1_PERIPH_CLOCK
 /* 硬件 SPI：937.5 kHz，使用合法的 DIV_128 编码 */
-#define DISPLAY_SPI_DIV                 SPI_MCLK_DIV_128
+#define DISPLAY_SPI_DIV                 SPI_MCLK_DIV_16
 
 /*
- * 硬件 SPI1 多次验证花屏；保留已验证可用的 GPIO bit-bang。
+ * 参考 ST7735S-master 的硬件 SPI 写法：命令/数据之间释放 CS。
  */
-#define DISPLAY_USE_BITBANG             (1U)
+#define DISPLAY_USE_BITBANG             (0U)
 
 #define DISPLAY_GPIO_PORT               GPIOA
 #define DISPLAY_CS_PIN                  GPIO_PINS_4
@@ -57,8 +57,8 @@
 #define DISPLAY_MOSI_SOURCE             GPIO_PINS_SOURCE7
 
 /* ============================ 面板参数 ============================ */
-#define DISPLAY_X_OFFSET                (1U)
-#define DISPLAY_Y_OFFSET                (26U)
+#define DISPLAY_X_OFFSET                (-2)
+#define DISPLAY_Y_OFFSET                (24U)
 
 /* MADCTL: MY | MV | BGR，横屏 160x80。若镜像可改 0x68。 */
 #define DISPLAY_MADCTL_VALUE            (0xA8U)
@@ -183,6 +183,11 @@ static const display_glyph_t display_font[] =
   { 'Y', { 5U, 5U, 2U, 2U, 2U } },
   { 'Z', { 7U, 1U, 2U, 4U, 7U } },
 
+  /* Chill245 品牌字所需的小写 h/i/l */
+  { 'h', { 4U, 4U, 6U, 5U, 5U } },
+  { 'i', { 2U, 0U, 2U, 2U, 2U } },
+  { 'l', { 6U, 2U, 2U, 2U, 3U } },
+
   /* 0x7F 作为度符号 ° */
   { (char)0x7F, { 2U, 5U, 2U, 0U, 0U } }
 };
@@ -226,12 +231,12 @@ static void display_spi_write_byte(uint8_t data)
     }
 
     DISPLAY_GPIO_PORT->scr = DISPLAY_SCK_PIN;
-    for(nop = 0U; nop < 20U; nop++)
+    for(nop = 0U; nop < 30U; nop++)
     {
       __NOP();
     }
     DISPLAY_GPIO_PORT->clr = DISPLAY_SCK_PIN;
-    for(nop = 0U; nop < 20U; nop++)
+    for(nop = 0U; nop < 30U; nop++)
     {
       __NOP();
     }
@@ -270,19 +275,23 @@ static void display_cmd_data(uint8_t cmd, const uint8_t *data, uint16_t len)
   display_cs_low();
   display_dc_command();
   display_spi_write_byte(cmd);
+  display_spi_wait_idle();
+  display_cs_high();
 
   if((data != NULL) && (len > 0U))
   {
+    /* 参考 ST7735S-master：命令和参数之间释放一次 CS */
     display_dc_data();
+    display_cs_low();
 
     for(i = 0U; i < len; i++)
     {
       display_spi_write_byte(data[i]);
     }
-  }
 
-  display_spi_wait_idle();
-  display_cs_high();
+    display_spi_wait_idle();
+    display_cs_high();
+  }
 }
 
 void display_write_command(uint8_t cmd)
@@ -482,10 +491,10 @@ void display_init(void)
 
 void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
-  uint16_t x0;
-  uint16_t x1;
-  uint16_t y0;
-  uint16_t y1;
+  int32_t x0s;
+  int32_t x1s;
+  int32_t y0s;
+  int32_t y1s;
   uint8_t data[4];
 
   if((w == 0U) || (h == 0U) || (x >= DISPLAY_WIDTH) || (y >= DISPLAY_HEIGHT))
@@ -503,21 +512,27 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     h = (uint16_t)(DISPLAY_HEIGHT - y);
   }
 
-  x0 = (uint16_t)(x + DISPLAY_X_OFFSET);
-  x1 = (uint16_t)(x + w - 1U + DISPLAY_X_OFFSET);
-  y0 = (uint16_t)(y + DISPLAY_Y_OFFSET);
-  y1 = (uint16_t)(y + h - 1U + DISPLAY_Y_OFFSET);
+  x0s = (int32_t)x + DISPLAY_X_OFFSET;
+  if(x0s < 0)
+  {
+    x0s = 0;
+  }
 
-  data[0] = (uint8_t)(x0 >> 8);
-  data[1] = (uint8_t)(x0 & 0xFFU);
-  data[2] = (uint8_t)(x1 >> 8);
-  data[3] = (uint8_t)(x1 & 0xFFU);
+  /* 窗口宽度保持与调用方写入的像素数一致；负偏移只裁剪最左侧 */
+  x1s = x0s + (int32_t)w - 1;
+  y0s = (int32_t)y + (int32_t)DISPLAY_Y_OFFSET;
+  y1s = y0s + (int32_t)h - 1;
+
+  data[0] = (uint8_t)((uint32_t)x0s >> 8);
+  data[1] = (uint8_t)((uint32_t)x0s & 0xFFU);
+  data[2] = (uint8_t)((uint32_t)x1s >> 8);
+  data[3] = (uint8_t)((uint32_t)x1s & 0xFFU);
   display_cmd_data(ST7735_CASET, data, 4U);
 
-  data[0] = (uint8_t)(y0 >> 8);
-  data[1] = (uint8_t)(y0 & 0xFFU);
-  data[2] = (uint8_t)(y1 >> 8);
-  data[3] = (uint8_t)(y1 & 0xFFU);
+  data[0] = (uint8_t)((uint32_t)y0s >> 8);
+  data[1] = (uint8_t)((uint32_t)y0s & 0xFFU);
+  data[2] = (uint8_t)((uint32_t)y1s >> 8);
+  data[3] = (uint8_t)((uint32_t)y1s & 0xFFU);
   display_cmd_data(ST7735_RASET, data, 4U);
 }
 
@@ -535,7 +550,11 @@ static void display_write_color_repeat(uint16_t color, uint32_t count)
   display_cs_low();
   display_dc_command();
   display_spi_write_byte(ST7735_RAMWR);
+  display_spi_wait_idle();
+  display_cs_high();
+
   display_dc_data();
+  display_cs_low();
 
   for(i = 0U; i < count; i++)
   {
@@ -560,7 +579,11 @@ void display_write_pixels(const uint16_t *colors, uint32_t count)
   display_cs_low();
   display_dc_command();
   display_spi_write_byte(ST7735_RAMWR);
+  display_spi_wait_idle();
+  display_cs_high();
+
   display_dc_data();
+  display_cs_low();
 
   for(i = 0U; i < count; i++)
   {
@@ -573,6 +596,51 @@ void display_write_pixels(const uint16_t *colors, uint32_t count)
   display_cs_high();
 }
 
+void display_begin_pixel_stream(void)
+{
+  if(display_initialized == 0U)
+  {
+    return;
+  }
+
+  display_cs_low();
+  display_dc_command();
+  display_spi_write_byte(ST7735_RAMWR);
+  display_spi_wait_idle();
+  display_cs_high();
+
+  display_dc_data();
+  display_cs_low();
+}
+
+void display_write_pixel_stream(const uint16_t *colors, uint32_t count)
+{
+  uint32_t i;
+  uint16_t color;
+
+  if((display_initialized == 0U) || (colors == NULL))
+  {
+    return;
+  }
+
+  for(i = 0U; i < count; i++)
+  {
+    color = colors[i];
+    display_spi_write_byte((uint8_t)(color >> 8));
+    display_spi_write_byte((uint8_t)(color & 0xFFU));
+  }
+}
+
+void display_end_pixel_stream(void)
+{
+  if(display_initialized == 0U)
+  {
+    return;
+  }
+
+  display_spi_wait_idle();
+  display_cs_high();
+}
 void display_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
   if((display_initialized == 0U) || (w == 0U) || (h == 0U) ||
@@ -633,16 +701,25 @@ static const display_glyph_t *display_find_glyph(char ch)
   uint16_t i;
   uint16_t count = (uint16_t)(sizeof(display_font) / sizeof(display_font[0]));
 
-  if((ch >= 'a') && (ch <= 'z'))
-  {
-    ch = (char)(ch - ('a' - 'A'));
-  }
-
+  /* 先按原字符找；Chill245 的 h/i/l 使用专门的小写字形 */
   for(i = 0U; i < count; i++)
   {
     if(display_font[i].ch == ch)
     {
       return &display_font[i];
+    }
+  }
+
+  if((ch >= 'a') && (ch <= 'z'))
+  {
+    ch = (char)(ch - ('a' - 'A'));
+
+    for(i = 0U; i < count; i++)
+    {
+      if(display_font[i].ch == ch)
+      {
+        return &display_font[i];
+      }
     }
   }
 
@@ -680,7 +757,11 @@ static void display_draw_glyph(uint16_t x, uint16_t y,
   display_cs_low();
   display_dc_command();
   display_spi_write_byte(ST7735_RAMWR);
+  display_spi_wait_idle();
+  display_cs_high();
+
   display_dc_data();
+  display_cs_low();
 
   for(row = 0U; row < 5U; row++)
   {

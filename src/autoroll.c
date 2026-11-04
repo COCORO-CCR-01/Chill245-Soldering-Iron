@@ -20,15 +20,16 @@
 #include "statemachine.h"
 #include "menu.h"
 #include "onekeyboost.h"
+#include "powermanagement.h"
 
 #define AUTOROLL_DEFAULT_MS             (5000U)
 #define AUTOROLL_MIN_MS                 (1000U)
 #define AUTOROLL_MAX_MS                 (60000U)
-#define AUTOROLL_GRAPH_REDRAW_MS        (500U)
+#define AUTOROLL_GRAPH_REDRAW_MS        (250U)
 
 #define UI_BLACK                        (0x0000U)
-#define UI_CYAN                         (0x07FFU)
-#define UI_DARK                         (0x4208U)
+#define UI_CYAN                         (0xFC9FU)
+#define UI_DARK                         (0x18C3U)
 
 static autoroll_page_t autoroll_page;
 static uint32_t autoroll_interval_ms;
@@ -47,7 +48,7 @@ static void autoroll_draw_indicator(void)
   {
     x = (uint16_t)(30U + (i * 26U));
     color = ((uint8_t)autoroll_page == i) ? UI_CYAN : UI_DARK;
-    display_fill_rect(x, 75U, 22U, 3U, color);
+    display_fill_rect(x, 77U, 22U, 2U, color);
   }
 }
 
@@ -71,6 +72,7 @@ static void autoroll_draw_page(void)
 
     case AUTOROLL_PAGE_MAIN:
     default:
+      graph_invalidate();
       sm_get_status(&status);
       maindash_draw(&status);
       break;
@@ -93,13 +95,9 @@ void autoroll_init(uint32_t interval_ms)
   autoroll_last_draw_ms = 0U;
   autoroll_enabled = 1U;
   autoroll_dirty = 1U;
+  graph_invalidate();
 
-  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_CLICK, autoroll_on_button);
-  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK, autoroll_on_button);
-  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_LONG_PRESS, autoroll_on_button);
-  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_LONG_PRESS, autoroll_on_button);
-  (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_REPEAT, autoroll_on_button);
-  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_REPEAT, autoroll_on_button);
+  /* 翻页按键统一由 main_buttons() 仲裁，autoroll 不再注册按键回调 */
 }
 
 void autoroll_update(uint32_t now_ms)
@@ -108,14 +106,7 @@ void autoroll_update(uint32_t now_ms)
 
   new_sample = graph_task(now_ms);
 
-  if((autoroll_enabled != 0U) &&
-     ((uint32_t)(now_ms - autoroll_last_roll_ms) >= autoroll_interval_ms))
-  {
-    autoroll_page = (autoroll_page_t)(((uint8_t)autoroll_page + 1U) %
-                                      (uint8_t)AUTOROLL_PAGE_COUNT);
-    autoroll_last_roll_ms = now_ms;
-    autoroll_dirty = 1U;
-  }
+  /* 已删除定时自动翻页：只保留 NEXT/PREV 短按手动切换 */
 
   if(autoroll_dirty != 0U)
   {
@@ -180,6 +171,7 @@ void autoroll_next(void)
   autoroll_page = (autoroll_page_t)(((uint8_t)autoroll_page + 1U) %
                                     (uint8_t)AUTOROLL_PAGE_COUNT);
   autoroll_last_roll_ms = sm_get_uptime_ms();
+  graph_invalidate();
   autoroll_dirty = 1U;
 }
 
@@ -195,6 +187,7 @@ void autoroll_prev(void)
   }
 
   autoroll_last_roll_ms = sm_get_uptime_ms();
+  graph_invalidate();
   autoroll_dirty = 1U;
 }
 
@@ -204,6 +197,7 @@ void autoroll_set_page(autoroll_page_t page)
   {
     autoroll_page = page;
     autoroll_last_roll_ms = sm_get_uptime_ms();
+    graph_invalidate();
     autoroll_dirty = 1U;
   }
 }
@@ -215,6 +209,7 @@ autoroll_page_t autoroll_get_page(void)
 
 void autoroll_request_redraw(void)
 {
+  graph_invalidate();
   autoroll_dirty = 1U;
 }
 
@@ -228,6 +223,14 @@ void autoroll_on_button(button_id_t button, button_event_t event)
   if((event != BUTTON_EVENT_CLICK) &&
      (event != BUTTON_EVENT_LONG_PRESS) &&
      (event != BUTTON_EVENT_REPEAT))
+  {
+    return;
+  }
+
+  /* 休眠时 NEXT 的这次 CLICK 只用于唤醒，不再翻页 */
+  if((button == BUTTON_NEXT) &&
+     (event == BUTTON_EVENT_CLICK) &&
+     (power_take_wake_click() != 0U))
   {
     return;
   }

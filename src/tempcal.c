@@ -12,6 +12,7 @@
   */
 
 #include "tempcal.h"
+#include "fmt.h"
 #include "onekeyboost.h"
 #include "temp.h"
 #include "statemachine.h"
@@ -19,7 +20,6 @@
 #include "hms.h"
 #include "eeprom.h"
 #include "buttons.h"
-#include "debug.h"
 #include "display.h"
 #include "ui_icons.h"
 #include <stddef.h>
@@ -46,6 +46,38 @@
 #define TEMPCAL_ACTUAL_MIN_C        (0.0f)
 #define TEMPCAL_ACTUAL_MAX_C        (600.0f)
 
+/* newlib-nano 未链接浮点 printf，使用整数缩放格式化 */
+static void tempcal_format_c(char *text, uint16_t size, float value,
+                             uint8_t decimals)
+{
+  int32_t scaled;
+  uint32_t abs_scaled;
+  uint32_t whole;
+  uint32_t frac;
+  const char *sign;
+
+  if((text == NULL) || (size == 0U))
+  {
+    return;
+  }
+
+  if(decimals == 0U)
+  {
+    scaled = (int32_t)(value + ((value >= 0.0f) ? 0.5f : -0.5f));
+    fmt_snprintf(text, size, "%ldC", (long)scaled);
+    return;
+  }
+
+  scaled = (int32_t)((value * 10.0f) +
+                     ((value >= 0.0f) ? 0.5f : -0.5f));
+  sign = (scaled < 0) ? "-" : "";
+  abs_scaled = (scaled < 0) ? (uint32_t)(-scaled) : (uint32_t)scaled;
+  whole = abs_scaled / 10U;
+  frac = abs_scaled % 10U;
+  fmt_snprintf(text, size, "%s%lu.%luC", sign, (unsigned long)whole,
+           (unsigned long)frac);
+}
+
 typedef enum
 {
   TEMPCAL_STATE_IDLE = 0,
@@ -64,7 +96,6 @@ static const float tempcal_targets[TEMPCAL_POINTS] =
 static tempcal_state_t tempcal_state;
 static uint8_t tempcal_index;
 static uint8_t tempcal_need_draw;
-static uint8_t tempcal_debug_enabled;
 static uint32_t tempcal_state_ms;
 static uint32_t tempcal_settle_ms;
 static uint32_t tempcal_last_draw_ms;
@@ -104,108 +135,6 @@ static float tempcal_clampf(float value, float min_value, float max_value)
   return value;
 }
 
-static uint8_t tempcal_streq(const char *a, const char *b)
-{
-  if((a == NULL) || (b == NULL))
-  {
-    return 0U;
-  }
-
-  while((*a != '\0') && (*b != '\0'))
-  {
-    if(*a != *b)
-    {
-      return 0U;
-    }
-    a++;
-    b++;
-  }
-
-  return (*a == *b) ? 1U : 0U;
-}
-
-static uint8_t tempcal_parse_float(const char *text, float *value)
-{
-  float sign = 1.0f;
-  float number = 0.0f;
-  float scale = 0.1f;
-  uint8_t has_digit = 0U;
-  uint8_t after_dot = 0U;
-
-  if((text == NULL) || (value == NULL))
-  {
-    return 0U;
-  }
-
-  if(*text == '-')
-  {
-    sign = -1.0f;
-    text++;
-  }
-  else if(*text == '+')
-  {
-    text++;
-  }
-
-  while(*text != '\0')
-  {
-    if((*text >= '0') && (*text <= '9'))
-    {
-      has_digit = 1U;
-
-      if(after_dot == 0U)
-      {
-        number = (number * 10.0f) + (float)(*text - '0');
-      }
-      else
-      {
-        number += (float)(*text - '0') * scale;
-        scale *= 0.1f;
-      }
-    }
-    else if((*text == '.') && (after_dot == 0U))
-    {
-      after_dot = 1U;
-    }
-    else
-    {
-      return 0U;
-    }
-
-    text++;
-  }
-
-  if(has_digit == 0U)
-  {
-    return 0U;
-  }
-
-  *value = sign * number;
-  return 1U;
-}
-
-static void tempcal_debug(const char *text)
-{
-  if(tempcal_debug_enabled != 0U)
-  {
-    debug_write(text);
-  }
-}
-
-static void tempcal_debug_prompt(void)
-{
-  if(tempcal_debug_enabled == 0U)
-  {
-    return;
-  }
-
-  debug_printf("TCAL %u/%u target=",
-               (unsigned)(tempcal_index + 1U),
-               (unsigned)TEMPCAL_POINTS);
-  debug_write_float(tempcal_targets[tempcal_index], 1U);
-  debug_write("C\r\n");
-}
-
 static void tempcal_restore_runtime(void)
 {
   (void)sm_set_setpoint(tempcal_orig_setpoint_c);
@@ -223,7 +152,6 @@ static void tempcal_fail(void)
   tempcal_state = TEMPCAL_STATE_ERROR;
   tempcal_state_ms = sm_get_uptime_ms();
   tempcal_need_draw = 1U;
-  tempcal_debug("TCAL ERROR\r\n");
 }
 
 static uint8_t tempcal_build_curve(void)
@@ -339,7 +267,6 @@ static void tempcal_finish(void)
   tempcal_state = TEMPCAL_STATE_DONE;
   tempcal_state_ms = sm_get_uptime_ms();
   tempcal_need_draw = 1U;
-  tempcal_debug("TCAL done, cal saved\r\n");
 }
 
 static void tempcal_draw_bar(void)
@@ -372,7 +299,7 @@ static void tempcal_draw(void)
   display_fill_rect(0U, 0U, DISPLAY_WIDTH, 14U, TEMPCAL_BAR);
   ui_icon_draw(UI_ICON_THERMO, 3U, 3U, TEMPCAL_WHITE);
   display_draw_string(15U, 2U, "TIP CAL", TEMPCAL_WHITE, TEMPCAL_BAR, 2U);
-  snprintf(text, sizeof(text), "%u/%u",
+  fmt_snprintf(text, sizeof(text), "%u/%u",
            (unsigned)(tempcal_index + 1U), (unsigned)TEMPCAL_POINTS);
   display_draw_string((uint16_t)(DISPLAY_WIDTH - display_string_width(text, 1U) - 3U),
                       4U, text, TEMPCAL_CYAN, TEMPCAL_BAR, 1U);
@@ -394,17 +321,17 @@ static void tempcal_draw(void)
   }
 
   display_draw_string(3U, 17U, "TARGET", TEMPCAL_GRAY, TEMPCAL_BLACK, 1U);
-  snprintf(text, sizeof(text), "%.0fC", tempcal_targets[tempcal_index]);
+  tempcal_format_c(text, sizeof(text), tempcal_targets[tempcal_index], 0U);
   display_draw_string(58U, 15U, text, TEMPCAL_WHITE, TEMPCAL_BLACK, 2U);
 
   display_draw_string(3U, 33U, "TIP", TEMPCAL_GRAY, TEMPCAL_BLACK, 1U);
-  snprintf(text, sizeof(text), "%.1fC", status.tip_c);
+  tempcal_format_c(text, sizeof(text), status.tip_c, 1U);
   display_draw_string(58U, 31U, text, TEMPCAL_CYAN, TEMPCAL_BLACK, 2U);
 
   if(tempcal_state == TEMPCAL_STATE_MEASURE)
   {
     display_draw_string(3U, 48U, "ACTUAL", TEMPCAL_YELLOW, TEMPCAL_BLACK, 1U);
-    snprintf(text, sizeof(text), "%.1fC", tempcal_actual_c);
+    tempcal_format_c(text, sizeof(text), tempcal_actual_c, 1U);
     display_draw_string(58U, 47U, text, TEMPCAL_YELLOW, TEMPCAL_BLACK, 2U);
     display_draw_string(2U, 64U, "PREV/NEXT ADJ  MENU OK",
                         TEMPCAL_GRAY, TEMPCAL_BLACK, 1U);
@@ -479,8 +406,6 @@ uint8_t tempcal_start(void)
   tempcal_state_ms = sm_get_uptime_ms();
   tempcal_need_draw = 1U;
 
-  tempcal_debug("TCAL start: 100/150/200/250/300/350/400C\r\n");
-  tempcal_debug_prompt();
 
   return 1U;
 }
@@ -495,7 +420,6 @@ void tempcal_cancel(void)
   tempcal_restore_runtime();
   tempcal_state = TEMPCAL_STATE_IDLE;
   tempcal_need_draw = 0U;
-  tempcal_debug("TCAL cancelled\r\n");
 }
 
 uint8_t tempcal_is_active(void)
@@ -533,9 +457,6 @@ uint8_t tempcal_submit_actual(float actual_c)
   tempcal_actual[tempcal_index] = actual_c;
   tempcal_cold[tempcal_index] = tempcal_cold_avg;
 
-  tempcal_debug("TCAL point saved: ");
-  debug_write_float(actual_c, 1U);
-  debug_write("C\r\n");
 
   tempcal_index++;
 
@@ -551,7 +472,6 @@ uint8_t tempcal_submit_actual(float actual_c)
   tempcal_state = TEMPCAL_STATE_SETTLE;
   tempcal_state_ms = sm_get_uptime_ms();
   tempcal_need_draw = 1U;
-  tempcal_debug_prompt();
 
   return 1U;
 }
@@ -630,8 +550,7 @@ void tempcal_task(uint32_t now_ms)
             tempcal_state = TEMPCAL_STATE_SAMPLE;
             tempcal_state_ms = now_ms;
             tempcal_need_draw = 1U;
-            tempcal_debug("TCAL stable, sampling ADC 1s\r\n");
-          }
+                    }
         }
         else
         {
@@ -672,14 +591,6 @@ void tempcal_task(uint32_t now_ms)
           tempcal_actual_c = tempcal_targets[tempcal_index];
           tempcal_need_draw = 1U;
 
-          if(tempcal_debug_enabled != 0U)
-          {
-            debug_printf("TCAL %u/%u stable ADC=%u raw\r\n",
-                         (unsigned)(tempcal_index + 1U),
-                         (unsigned)TEMPCAL_POINTS,
-                         (unsigned)tempcal_adc_avg);
-            debug_write("TCAL enter measured tip: tcal actual <C>\r\n");
-          }
         }
         break;
 
@@ -732,60 +643,6 @@ static void tempcal_on_button(button_id_t button, button_event_t event)
   }
 }
 
-static void tempcal_debug_command(int argc, char **argv)
-{
-  float value;
-
-  if(argc < 2)
-  {
-    debug_write("usage: tcal start|cancel|status|actual <C>\r\n");
-    return;
-  }
-
-  if(tempcal_streq(argv[1], "start") != 0U)
-  {
-    tempcal_debug_enabled = 1U;
-
-    if(tempcal_start() == 0U)
-    {
-      debug_write("TCAL cannot start (fault/autotune/busy)\r\n");
-    }
-  }
-  else if(tempcal_streq(argv[1], "cancel") != 0U)
-  {
-    tempcal_cancel();
-  }
-  else if(tempcal_streq(argv[1], "status") != 0U)
-  {
-    sm_status_t status;
-
-    sm_get_status(&status);
-    debug_printf("TCAL state=%u point=%u/%u tip=",
-                 (unsigned)tempcal_state,
-                 (unsigned)(tempcal_index + 1U),
-                 (unsigned)TEMPCAL_POINTS);
-    debug_write_float(status.tip_c, 1U);
-    debug_write("C\r\n");
-  }
-  else if(tempcal_streq(argv[1], "actual") != 0U)
-  {
-    if((argc < 3) || (tempcal_parse_float(argv[2], &value) == 0U))
-    {
-      debug_write("usage: tcal actual <C>\r\n");
-      return;
-    }
-
-    if(tempcal_submit_actual(value) == 0U)
-    {
-      debug_write("TCAL not waiting for actual\r\n");
-    }
-  }
-  else
-  {
-    debug_write("usage: tcal start|cancel|status|actual <C>\r\n");
-  }
-}
-
 void tempcal_init(void)
 {
   if(tempcal_initialized != 0U)
@@ -796,7 +653,6 @@ void tempcal_init(void)
   tempcal_state = TEMPCAL_STATE_IDLE;
   tempcal_index = 0U;
   tempcal_need_draw = 0U;
-  tempcal_debug_enabled = 0U;
   tempcal_actual_c = TEMPCAL_ACTUAL_MIN_C;
   tempcal_initialized = 1U;
 
@@ -809,7 +665,4 @@ void tempcal_init(void)
   (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
                                   tempcal_on_button);
 
-  (void)debug_register_command("tcal",
-                               "tip calibration: tcal start|cancel|status|actual <C>",
-                               tempcal_debug_command);
 }

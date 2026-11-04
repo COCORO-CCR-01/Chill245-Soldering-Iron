@@ -8,10 +8,10 @@ extern "C" {
 #include <stdint.h>
 
 /**
-  * @brief  初始化热端校准：注册按键和调试命令
+  * @brief  初始化热端校准：注册按键
   * @param  none
   * @retval none
-  * @note   必须在 buttons_init()、debug_init()、sm_init() 之后调用。
+  * @note   必须在 buttons_init()、sm_init() 之后调用。
   */
 void tempcal_init(void);
 

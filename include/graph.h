@@ -46,6 +46,11 @@ void graph_draw_voltage(void);
   */
 void graph_draw_cold(void);
 
+/**
+  * @brief  使曲线页静态区域失效，下次进入时重新清屏
+  */
+void graph_invalidate(void);
+
 #ifdef __cplusplus
 }
 #endif

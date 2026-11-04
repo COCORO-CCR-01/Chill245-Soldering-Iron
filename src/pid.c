@@ -1,3 +1,4 @@
+#pragma GCC optimize("O2")
 /**
   **************************************************************************
   * @file     pid.c
@@ -27,16 +28,28 @@
 /* ============================ PID 参数 ============================ */
 #define PID_OUTPUT_MIN                  (0.0f)
 #define PID_OUTPUT_MAX                  (100.0f)
-#define PID_INTEGRAL_MIN                (0.0f)
+#define PID_INTEGRAL_MIN                (-50.0f)
 #define PID_INTEGRAL_MAX                (100.0f)
 
 #define PID_SETPOINT_MIN_C              (0.0f)
 #define PID_SETPOINT_MAX_C              (450.0f)
 #define PID_DEFAULT_SETPOINT_C          (300.0f)
 
-#define PID_DEFAULT_KP                  (1.5f)
-#define PID_DEFAULT_KI                  (0.05f)
-#define PID_DEFAULT_KD                  (1.0f)
+#define PID_DEFAULT_KP                  (1.2f)
+#define PID_DEFAULT_KI                  (0.04f)
+#define PID_DEFAULT_KD                  (1.2f)
+
+#define PID_I_BAND_C                    (30.0f)
+#define PID_BULK_BAND_C                 (15.0f)
+#define PID_NEAR_BAND_C                 (10.0f)
+#define PID_NEAR_FLOOR_PER_C            (4.0f)
+#define PID_FF_PER_C                    (0.05f)
+#define PID_FF_MAX                      (30.0f)
+#define PID_FF_TAPER_C                  (5.0f)
+
+#define PID_AT_KP_DIV                   (2.8f)
+#define PID_AT_TI_MULT                  (2.8f)
+#define PID_AT_INTEGRAL_INIT_MAX        (35.0f)
 
 #define PID_BOOST_KP_SCALE              (1.6f)
 #define PID_BOOST_KI_SCALE              (1.4f)
@@ -220,6 +233,7 @@ static void pid_autotune_finish(float temperature_c, uint32_t now_ms)
   float kd;
   float duty_percent;
   float high_fraction;
+  float feedforward;
   uint32_t total_time_ms;
   pid_curve_t standard_curve;
 
@@ -248,9 +262,9 @@ static void pid_autotune_finish(float temperature_c, uint32_t now_ms)
     return;
   }
 
-  /* Tyreus-Luyben 规则：比 Ziegler-Nichols 更稳健，适合热惯性系统 */
-  kp = ku / 2.2f;
-  ti_s = 2.2f * pu_s;
+  /* Tyreus-Luyben 规则，并进一步放慢积分，抑制热惯性超调 */
+  kp = ku / PID_AT_KP_DIV;
+  ti_s = PID_AT_TI_MULT * pu_s;
 
   if(ti_s <= 0.0f)
   {
@@ -281,7 +295,7 @@ static void pid_autotune_finish(float temperature_c, uint32_t now_ms)
   }
 
   duty_percent = PID_AT_PWM_LOW + ((PID_AT_PWM_HIGH - PID_AT_PWM_LOW) * high_fraction);
-  duty_percent = pid_clampf(duty_percent, PID_OUTPUT_MIN, PID_OUTPUT_MAX);
+  duty_percent = pid_clampf(duty_percent, PID_OUTPUT_MIN, PID_AT_INTEGRAL_INIT_MAX);
 
   pid_at.result.ku = ku;
   pid_at.result.pu_s = pu_s;
@@ -299,10 +313,14 @@ static void pid_autotune_finish(float temperature_c, uint32_t now_ms)
   /* 整定完成后默认回到标准曲线 */
   pid_state.mode = PID_MODE_STANDARD;
 
-  /* 无扰切换：从估算的稳态功率开始，而不是从 0 开始 */
+  /* 无扰切换：初始积分扣除设定温度前馈，避免重复叠加稳态功率 */
   pid_reset_runtime();
-  pid_state.integral = duty_percent;
-  pid_state.output = duty_percent;
+  feedforward = pid_clampf(pid_state.setpoint_c * PID_FF_PER_C,
+                           0.0f, PID_FF_MAX);
+  pid_state.integral = pid_clampf(duty_percent - feedforward,
+                                  PID_INTEGRAL_MIN, PID_INTEGRAL_MAX);
+  pid_state.output = pid_clampf(feedforward + pid_state.integral,
+                                PID_OUTPUT_MIN, PID_OUTPUT_MAX);
   pid_state.prev_temp_c = temperature_c;
   pid_state.last_temp_c = temperature_c;
   pid_state.last_ms = now_ms;
@@ -483,7 +501,15 @@ void pid_reset(void)
 
 void pid_set_setpoint(float setpoint_c)
 {
-  pid_state.setpoint_c = pid_clampf(setpoint_c, PID_SETPOINT_MIN_C, PID_SETPOINT_MAX_C);
+  float new_setpoint = pid_clampf(setpoint_c, PID_SETPOINT_MIN_C, PID_SETPOINT_MAX_C);
+
+  if(new_setpoint != pid_state.setpoint_c)
+  {
+    /* 任何设定温度变化都清掉当前 PID 运行状态：
+       积分、微分滤波、上次温度、输出、时间基准全部重新开始。 */
+    pid_reset_runtime();
+    pid_state.setpoint_c = new_setpoint;
+  }
 }
 
 float pid_get_setpoint(void)
@@ -661,8 +687,10 @@ static float pid_compute(float temperature_c, float dt_s)
   float p_term;
   float i_candidate;
   float d_term;
+  float feedforward;
   float raw_output;
   float output;
+  float output_max;
   pid_curve_t curve;
 
   if(pid_state.mode >= PID_MODE_COUNT)
@@ -717,12 +745,48 @@ static float pid_compute(float temperature_c, float dt_s)
 
   d_term = -curve.kd * pid_state.d_filtered;
 
-  i_candidate = pid_state.integral + (curve.ki * error * dt_s);
+  /*
+   * 离目标还远时完全放开功率，直接用 100% 升温。
+   * 进入目标前 15°C 后才交回 PID，由前馈、积分和微分接管。
+   */
+  if(error > PID_BULK_BAND_C)
+  {
+    pid_state.integral = 0.0f;
+    pid_state.output = PID_OUTPUT_MAX;
+    pid_state.prev_temp_c = temperature_c;
+    return PID_OUTPUT_MAX;
+  }
 
-  raw_output = p_term + i_candidate + d_term;
+  /* 设定温度前馈：只在目标下方给基础功率；越接近目标越小，避免过冲后仍有基础加热 */
+  if(error > 0.0f)
+  {
+    feedforward = pid_clampf(pid_state.setpoint_c * PID_FF_PER_C,
+                             0.0f, PID_FF_MAX);
 
-  /* 抗积分饱和：输出已经顶到限幅时，不再往同方向积分 */
-  if(((raw_output > PID_OUTPUT_MAX) && (error > 0.0f)) ||
+    if(error < PID_FF_TAPER_C)
+    {
+      feedforward = feedforward * (error / PID_FF_TAPER_C);
+    }
+  }
+  else
+  {
+    feedforward = 0.0f;
+  }
+
+  output_max = PID_OUTPUT_MAX;
+
+  /* 积分分离：远离目标时只保留已有积分，不再累积 */
+  i_candidate = pid_state.integral;
+
+  if((error < PID_I_BAND_C) && (error > -PID_I_BAND_C))
+  {
+    i_candidate += curve.ki * error * dt_s;
+  }
+
+  raw_output = p_term + i_candidate + d_term + feedforward;
+
+  /* 抗积分饱和：输出已经顶到当前限幅时，不再往同方向积分 */
+  if(((raw_output > output_max) && (error > 0.0f)) ||
      ((raw_output < PID_OUTPUT_MIN) && (error < 0.0f)))
   {
     i_candidate = pid_state.integral;
@@ -730,8 +794,31 @@ static float pid_compute(float temperature_c, float dt_s)
 
   pid_state.integral = pid_clampf(i_candidate, PID_INTEGRAL_MIN, PID_INTEGRAL_MAX);
 
-  output = p_term + pid_state.integral + d_term;
-  pid_state.output = pid_clampf(output, PID_OUTPUT_MIN, PID_OUTPUT_MAX);
+  /* 过冲超过 0.5°C 时清掉正积分，避免残留积分继续维持小功率加热 */
+  if((error < -0.5f) && (pid_state.integral > 0.0f))
+  {
+    pid_state.integral = 0.0f;
+  }
+
+  output = p_term + pid_state.integral + d_term + feedforward;
+
+  /*
+   * 最后 10°C 增加功率下限，避免微分制动把输出压到很低：
+   *   误差 10°C -> 至少 40%
+   *   误差  5°C -> 至少 20%
+   *   误差  1°C -> 至少 4%
+   */
+  if((error > 0.0f) && (error < PID_NEAR_BAND_C))
+  {
+    float near_floor = error * PID_NEAR_FLOOR_PER_C;
+
+    if(output < near_floor)
+    {
+      output = near_floor;
+    }
+  }
+
+  pid_state.output = pid_clampf(output, PID_OUTPUT_MIN, output_max);
   pid_state.prev_temp_c = temperature_c;
 
   return pid_state.output;

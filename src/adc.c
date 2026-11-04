@@ -1,3 +1,4 @@
+#pragma GCC optimize("O2")
 #include "at32f421_conf.h"
 #include "adc.h"
 #include "wk_system.h"
@@ -10,9 +11,9 @@
 /* PA2 -> ADC_IN2：V-ADC */
 #define ADC_VIN_CHANNEL                 ADC_CHANNEL_2
 
-/* 三路输入均为外部模拟信号；41.5 周期在 15 MHz ADC 时钟下约 2.8 µs，
-   三路总转换约 10.8 µs，可放进 20 kHz（50 µs）控制周期。 */
-#define ADC_SAMPLE_TIME                 ADC_SAMPLETIME_41_5
+/* 三路输入均为外部模拟信号；71.5 周期在 20 MHz ADC 时钟下约 4.2 µs，
+   三路总转换约 13 µs，可放进 20 kHz（50 µs）控制周期，同时降低采样噪声。 */
+#define ADC_SAMPLE_TIME                 ADC_SAMPLETIME_71_5
 
 /*
  * 上电执行完整校准：ADCALINIT -> ADCAL。

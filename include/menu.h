@@ -39,6 +39,14 @@ uint8_t menu_is_open(void);
 void menu_open(void);
 
 /**
+  * @brief  双击 MENU 打开快速设定温度编辑
+  * @param  none
+  * @retval none
+  * @note   直接进入 TEMPERATURE -> SETPOINT 编辑，NEXT/PREV 调整，MENU 确认退出。
+  */
+void menu_open_quick_setpoint(void);
+
+/**
   * @brief  关闭菜单并应用设置
   * @param  none
   * @retval none

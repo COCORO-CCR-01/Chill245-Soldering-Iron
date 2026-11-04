@@ -36,6 +36,7 @@ typedef struct
   uint32_t raw_change_ms;
   uint32_t press_start_ms;
   uint32_t last_repeat_ms;
+  uint32_t last_click_ms;
 } button_state_t;
 
 static button_state_t button_state[BUTTON_COUNT];
@@ -157,7 +158,18 @@ void buttons_update(uint32_t now_ms)
 
         if(state->long_sent == 0U)
         {
-          buttons_emit((button_id_t)i, BUTTON_EVENT_CLICK);
+          if((state->last_click_ms != 0U) &&
+             ((uint32_t)(now_ms - state->last_click_ms) <=
+              BUTTON_DOUBLE_CLICK_MS))
+          {
+            state->last_click_ms = 0U;
+            buttons_emit((button_id_t)i, BUTTON_EVENT_DOUBLE_CLICK);
+          }
+          else
+          {
+            state->last_click_ms = now_ms;
+            buttons_emit((button_id_t)i, BUTTON_EVENT_CLICK);
+          }
         }
       }
     }
@@ -166,6 +178,7 @@ void buttons_update(uint32_t now_ms)
        ((uint32_t)(now_ms - state->press_start_ms) >= BUTTON_LONG_PRESS_MS))
     {
       state->long_sent = 1U;
+      state->last_click_ms = 0U;
       state->last_repeat_ms = now_ms;
       buttons_emit((button_id_t)i, BUTTON_EVENT_LONG_PRESS);
     }

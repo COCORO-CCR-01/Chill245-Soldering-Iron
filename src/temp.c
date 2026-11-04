@@ -1,3 +1,4 @@
+#pragma GCC optimize("O2")
 /**
   **************************************************************************
   * @file     temp.c
@@ -139,15 +140,15 @@ _Static_assert((sizeof(temp_ntc_table) / sizeof(temp_ntc_table[0])) == TEMP_NTC_
  * 温度一阶 IIR/EMA 平滑：
  *   y_n = alpha * x_n + (1 - alpha) * y_{n-1}
  *
- * 采样改为 10 ms（100 Hz）消隐采样后：
- *   TEMP_TC_FILTER_ALPHA  0.12 @ 100 Hz -> 约 2 Hz
- *   TEMP_NTC_FILTER_ALPHA 0.10 @ 100 Hz -> 约 1.6 Hz
+ * 采样改为 5 ms（200 Hz）消隐采样后：
+ *   TEMP_TC_FILTER_ALPHA  0.06 @ 200 Hz -> 约 2 Hz
+ *   TEMP_NTC_FILTER_ALPHA 0.05 @ 200 Hz -> 约 1.6 Hz
  *
  * 烙铁头热时间常数远大于温度滤波时间常数，平滑主要压制
  * ADC 噪声和加热器耦合残余。
  */
-#define TEMP_TC_FILTER_ALPHA            (0.12f)
-#define TEMP_NTC_FILTER_ALPHA           (0.10f)
+#define TEMP_TC_FILTER_ALPHA            (0.06f)
+#define TEMP_NTC_FILTER_ALPHA           (0.05f)
 
 /* ====================== 烙铁头 10 点标定曲线 ====================== */
 /*
@@ -438,6 +439,34 @@ static uint8_t temp_room_filter_init;
 static uint8_t temp_tip_filter_init;
 static float temp_room_filtered_c;
 static float temp_tip_filtered_c;
+static float temp_tip_hist[3];
+static uint8_t temp_tip_hist_index;
+static uint8_t temp_tip_hist_count;
+
+/* 三点中值：抑制单次 ADC 尖峰，再进入 EMA */
+static float temp_median3(float a, float b, float c)
+{
+  if(a > b)
+  {
+    float t = a;
+    a = b;
+    b = t;
+  }
+
+  if(b > c)
+  {
+    float t = b;
+    b = c;
+    c = t;
+  }
+
+  if(a > b)
+  {
+    b = a;
+  }
+
+  return b;
+}
 
 /**
   * @brief  一阶 IIR/EMA 温度平滑
@@ -528,6 +557,11 @@ void temp_update_fast(const adc_raw_data_t *adc_raw,
   if(temp_tip_filter_init == 0U)
   {
     temp_tip_filtered_c = temp_room_filtered_c;
+    temp_tip_hist[0] = temp_room_filtered_c;
+    temp_tip_hist[1] = temp_room_filtered_c;
+    temp_tip_hist[2] = temp_room_filtered_c;
+    temp_tip_hist_index = 0U;
+    temp_tip_hist_count = 3U;
     temp_tip_filter_init = 1U;
 
     if(update_room == 0U)
@@ -542,6 +576,18 @@ void temp_update_fast(const adc_raw_data_t *adc_raw,
 
   /* PA1 / T-ADC：热电偶 + 冷端补偿，每个 20 kHz 周期更新 */
   raw_tip_c = temp_thermocouple_adc_to_celsius(adc_raw->thermocouple, temp->room_c);
+
+  temp_tip_hist[temp_tip_hist_index] = raw_tip_c;
+  temp_tip_hist_index = (uint8_t)((temp_tip_hist_index + 1U) % 3U);
+  if(temp_tip_hist_count < 3U)
+  {
+    temp_tip_hist_count++;
+  }
+
+  if(temp_tip_hist_count >= 3U)
+  {
+    raw_tip_c = temp_median3(temp_tip_hist[0], temp_tip_hist[1], temp_tip_hist[2]);
+  }
 
   temp_tip_filtered_c = temp_ema_step(raw_tip_c,
                                       temp_tip_filtered_c,

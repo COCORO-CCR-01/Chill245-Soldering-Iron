@@ -61,6 +61,7 @@ typedef struct
   float boost_drop_c;
   float boost_timeout_s;
   float setpoint_step_c;
+  float time_step_s;
 
   float verify_overtemp_c;
   float verify_jump_c;

@@ -4,8 +4,8 @@
   * @brief    160x80 横屏主界面
   **************************************************************************
   * 布局：
-  *   y=1    标题 JBC245 + 短状态
-  *   y=16   热端温度大号七段数码（3 位 + °C）
+  *   y=1    标题 Chill245 + 短状态
+  *   y=16   热端温度大号圆润数字（3 位 + °C）
   *   y=50   功率百分比（2 位 + %）
   *   y=76   VIN 电压
   *   y=92   COLD 冷端
@@ -17,23 +17,100 @@
   */
 
 #include "maindash.h"
+#include "fmt.h"
 #include "display.h"
 #include "powermanagement.h"
 #include "onekeyboost.h"
 #include "ui_icons.h"
+#include "round_digits.h"
 #include <stdio.h>
 
 #define UI_BLACK                        (0x0000U)
 #define UI_WHITE                        (0xFFFFU)
-#define UI_GRAY                         (0x8410U)
-#define UI_DARK                         (0x4208U)
-#define UI_ORANGE                       (0xFD20U)
-#define UI_GREEN                        (0x07E0U)
+#define UI_GRAY                         (0x9CF3U)
+#define UI_DARK                         (0x18C3U)
+#define UI_HEADER                       (0x0861U)
+#define UI_PINK                         (0xFC9FU)
+#define UI_BLUE                         (0x05FFU)
 #define UI_RED                          (0xF800U)
-#define UI_CYAN                         (0x07FFU)
-#define UI_YELLOW                       (0xFFE0U)
+#define UI_ORANGE                       UI_PINK
+#define UI_GREEN                        UI_BLUE
+#define UI_CYAN                         UI_BLUE
+#define UI_YELLOW                       UI_WHITE
 
 #define UI_INFO_PERIOD_MS               (200U)
+
+static uint16_t maindash_round_buf[ROUND_GLYPH_W * ROUND_GLYPH_H];
+
+static void maindash_draw_round_digit(uint16_t x, uint16_t y, uint8_t digit)
+{
+  static const uint16_t palette[4] =
+  {
+    UI_BLACK, 0x3847U, 0x90B2U, UI_PINK
+  };
+  uint16_t col;
+  uint16_t row;
+  uint16_t index;
+  uint8_t alpha;
+
+  if(digit >= ROUND_GLYPH_COUNT)
+  {
+    display_fill_rect(x, y, ROUND_GLYPH_W, ROUND_GLYPH_H, UI_BLACK);
+    return;
+  }
+
+  for(row = 0U; row < ROUND_GLYPH_H; row++)
+  {
+    for(col = 0U; col < ROUND_GLYPH_W; col++)
+    {
+      index = (uint16_t)(row * 5U + (col >> 2));
+      alpha = (uint8_t)((round_digits[digit][index] >> ((col & 3U) * 2U)) & 0x03U);
+      maindash_round_buf[row * ROUND_GLYPH_W + col] = palette[alpha];
+    }
+  }
+
+  display_set_window(x, y, ROUND_GLYPH_W, ROUND_GLYPH_H);
+  display_write_pixels(maindash_round_buf, ROUND_GLYPH_W * ROUND_GLYPH_H);
+}
+
+#define ROUND_SMALL_W (ROUND_GLYPH_W / 2U)
+#define ROUND_SMALL_H (ROUND_GLYPH_H / 2U)
+
+/* 功率用半尺寸圆润数字 */
+static void maindash_draw_round_digit_small(uint16_t x, uint16_t y, uint8_t digit)
+{
+  static const uint16_t palette[4] =
+  {
+    UI_BLACK, 0x3847U, 0x90B2U, UI_PINK
+  };
+  uint16_t col;
+  uint16_t row;
+  uint16_t src_x;
+  uint16_t src_y;
+  uint16_t index;
+  uint8_t alpha;
+
+  if(digit >= ROUND_GLYPH_COUNT)
+  {
+    display_fill_rect(x, y, ROUND_SMALL_W, ROUND_SMALL_H, UI_BLACK);
+    return;
+  }
+
+  for(row = 0U; row < ROUND_SMALL_H; row++)
+  {
+    src_y = (uint16_t)(row * 2U);
+    for(col = 0U; col < ROUND_SMALL_W; col++)
+    {
+      src_x = (uint16_t)(col * 2U);
+      index = (uint16_t)(src_y * 5U + (src_x >> 2));
+      alpha = (uint8_t)((round_digits[digit][index] >> ((src_x & 3U) * 2U)) & 0x03U);
+      maindash_round_buf[row * ROUND_SMALL_W + col] = palette[alpha];
+    }
+  }
+
+  display_set_window(x, y, ROUND_SMALL_W, ROUND_SMALL_H);
+  display_write_pixels(maindash_round_buf, ROUND_SMALL_W * ROUND_SMALL_H);
+}
 
 static uint32_t maindash_last_draw_ms;
 
@@ -47,91 +124,7 @@ static int maindash_round_float(float value)
   return (int)(value - 0.5f);
 }
 
-/**
-  * @brief  七段数码管数字
-  * @param  x/y/w/h: 数字外框
-  * @param  thickness: 笔画宽度
-  * @param  digit: 0~9
-  */
-static void maindash_draw_seg_digit(uint16_t x, uint16_t y,
-                                    uint16_t w, uint16_t h,
-                                    uint8_t thickness, uint8_t digit,
-                                    uint16_t color)
-{
-  static const uint8_t patterns[10] =
-  {
-    0x3FU, 0x06U, 0x5BU, 0x4FU, 0x66U,
-    0x6DU, 0x7DU, 0x07U, 0x7FU, 0x6FU
-  };
-
-  uint8_t mask;
-  uint16_t mid;
-  uint16_t upper_bottom;
-  uint16_t lower_top;
-  uint16_t upper_h;
-  uint16_t lower_h;
-
-  digit = (uint8_t)(digit % 10U);
-  mask = patterns[digit];
-
-  display_fill_rect(x, y, w, h, UI_BLACK);
-
-  mid = (uint16_t)(y + (h / 2U));
-  upper_bottom = (uint16_t)(mid - (thickness / 2U) - 1U);
-  lower_top = (uint16_t)(mid + (thickness / 2U) + 1U);
-  upper_h = (uint16_t)(upper_bottom - (y + thickness));
-  lower_h = (uint16_t)((y + h - thickness) - lower_top);
-
-  /* A 上横 */
-  if((mask & 0x01U) != 0U)
-  {
-    display_fill_rect((uint16_t)(x + thickness), y,
-                      (uint16_t)(w - (2U * thickness)), thickness, color);
-  }
-
-  /* B 右上竖 */
-  if((mask & 0x02U) != 0U)
-  {
-    display_fill_rect((uint16_t)(x + w - thickness), (uint16_t)(y + thickness),
-                      thickness, upper_h, color);
-  }
-
-  /* C 右下竖 */
-  if((mask & 0x04U) != 0U)
-  {
-    display_fill_rect((uint16_t)(x + w - thickness), lower_top,
-                      thickness, lower_h, color);
-  }
-
-  /* D 下横 */
-  if((mask & 0x08U) != 0U)
-  {
-    display_fill_rect((uint16_t)(x + thickness), (uint16_t)(y + h - thickness),
-                      (uint16_t)(w - (2U * thickness)), thickness, color);
-  }
-
-  /* E 左下竖 */
-  if((mask & 0x10U) != 0U)
-  {
-    display_fill_rect(x, lower_top, thickness, lower_h, color);
-  }
-
-  /* F 左上竖 */
-  if((mask & 0x20U) != 0U)
-  {
-    display_fill_rect(x, (uint16_t)(y + thickness), thickness, upper_h, color);
-  }
-
-  /* G 中横 */
-  if((mask & 0x40U) != 0U)
-  {
-    display_fill_rect((uint16_t)(x + thickness),
-                      (uint16_t)(mid - (thickness / 2U)),
-                      (uint16_t)(w - (2U * thickness)), thickness, color);
-  }
-}
-
-static void maindash_draw_temperature(const sm_status_t *status)
+static void maindash_draw_temperature(const sm_status_t *status, int display_tip_c)
 {
   int tip_c;
   uint8_t hundreds;
@@ -140,12 +133,14 @@ static void maindash_draw_temperature(const sm_status_t *status)
 
   if(status->temp_valid == 0U)
   {
-    display_fill_rect(2U, 14U, 64U, 26U, UI_BLACK);
-    display_draw_string(8U, 19U, "---", UI_ORANGE, UI_BLACK, 3U);
+    display_fill_rect(2U, 13U, 72U, 33U, UI_BLACK);
+    maindash_draw_round_digit(2U, 14U, 10U);
+    maindash_draw_round_digit(20U, 14U, 10U);
+    maindash_draw_round_digit(38U, 14U, 10U);
     return;
   }
 
-  tip_c = maindash_round_float(status->tip_c);
+  tip_c = display_tip_c;
 
   if(tip_c < 0)
   {
@@ -163,26 +158,26 @@ static void maindash_draw_temperature(const sm_status_t *status)
 
   if(hundreds != 0U)
   {
-    maindash_draw_seg_digit(4U, 14U, 14U, 24U, 3U, hundreds, UI_ORANGE);
+    maindash_draw_round_digit(2U, 14U, hundreds);
   }
   else
   {
-    display_fill_rect(4U, 14U, 14U, 24U, UI_BLACK);
+    display_fill_rect(2U, 14U, ROUND_GLYPH_W, ROUND_GLYPH_H, UI_BLACK);
   }
 
   if((hundreds != 0U) || (tens != 0U))
   {
-    maindash_draw_seg_digit(19U, 14U, 14U, 24U, 3U, tens, UI_ORANGE);
+    maindash_draw_round_digit(20U, 14U, tens);
   }
   else
   {
-    display_fill_rect(19U, 14U, 14U, 24U, UI_BLACK);
+    display_fill_rect(20U, 14U, ROUND_GLYPH_W, ROUND_GLYPH_H, UI_BLACK);
   }
 
-  maindash_draw_seg_digit(34U, 14U, 14U, 24U, 3U, units, UI_ORANGE);
+  maindash_draw_round_digit(38U, 14U, units);
 
   /* °C */
-  display_draw_string(50U, 19U, "\x7F" "C", UI_ORANGE, UI_BLACK, 2U);
+  display_draw_string(57U, 24U, "\x7F" "C", UI_ORANGE, UI_BLACK, 2U);
 }
 
 static void maindash_draw_power(const sm_status_t *status)
@@ -196,10 +191,14 @@ static void maindash_draw_power(const sm_status_t *status)
     power = 100U;
   }
 
+  display_fill_rect(2U, 46U, 70U, 17U, UI_BLACK);
+
   if(power >= 100U)
   {
-    display_fill_rect(2U, 44U, 24U, 16U, UI_BLACK);
-    display_draw_string(2U, 47U, "100", UI_GREEN, UI_BLACK, 2U);
+    maindash_draw_round_digit_small(4U, 47U, 1U);
+    maindash_draw_round_digit_small(14U, 47U, 0U);
+    maindash_draw_round_digit_small(24U, 47U, 0U);
+    display_draw_string(36U, 49U, "%", UI_GREEN, UI_BLACK, 2U);
   }
   else
   {
@@ -208,30 +207,32 @@ static void maindash_draw_power(const sm_status_t *status)
 
     if(tens != 0U)
     {
-      maindash_draw_seg_digit(4U, 44U, 10U, 16U, 2U, tens, UI_GREEN);
+      maindash_draw_round_digit_small(4U, 47U, tens);
     }
     else
     {
-      display_fill_rect(4U, 44U, 10U, 16U, UI_BLACK);
+      display_fill_rect(4U, 47U, ROUND_SMALL_W, ROUND_SMALL_H, UI_BLACK);
     }
 
-    maindash_draw_seg_digit(15U, 44U, 10U, 16U, 2U, units, UI_GREEN);
+    maindash_draw_round_digit_small(14U, 47U, units);
+    display_draw_string(26U, 49U, "%", UI_GREEN, UI_BLACK, 2U);
   }
 
-  display_draw_string(27U, 47U, "%", UI_GREEN, UI_BLACK, 2U);
-  ui_icon_draw(UI_ICON_BOLT, 44U, 46U, UI_GREEN);
-  display_draw_string(38U, 49U, "PWR", UI_GRAY, UI_BLACK, 1U);
+  display_draw_string(42U, 51U, "PWR", UI_GRAY, UI_BLACK, 1U);
+  ui_icon_draw(UI_ICON_BOLT, 60U, 48U, UI_GREEN);
 }
 
 static void maindash_draw_info_row(uint16_t x, uint16_t y,
                                    ui_icon_t icon, const char *label,
                                    const char *value, uint16_t value_color)
 {
-  ui_icon_draw(icon, x, y, UI_GRAY);
-  display_draw_string((uint16_t)(x + 10U), y, label, UI_GRAY, UI_BLACK, 1U);
-  display_fill_rect((uint16_t)(x + 36U), y, 40U, 10U, UI_BLACK);
-  display_draw_string((uint16_t)(x + 36U), y, value,
-                      value_color, UI_BLACK, 1U);
+  ui_icon_draw(icon, x, (uint16_t)(y + 2U), UI_BLUE);
+  display_draw_string((uint16_t)(x + 11U), (uint16_t)(y + 4U),
+                      label, UI_BLUE, UI_BLACK, 1U);
+  display_fill_rect((uint16_t)(x + 32U), (uint16_t)(y + 1U),
+                    48U, 11U, UI_BLACK);
+  display_draw_string((uint16_t)(x + 32U), (uint16_t)(y + 1U), value,
+                      value_color, UI_BLACK, 2U);
 }
 
 static const char *maindash_top_state(const sm_status_t *status, uint16_t *color)
@@ -437,7 +438,7 @@ void maindash_init(void)
   maindash_last_draw_ms = 0U;
 }
 
-#define MAINDASH_DRAW_STEPS (6U)
+#define MAINDASH_DRAW_STEPS (7U)
 
 static uint8_t maindash_step_active;
 static uint8_t maindash_step_index;
@@ -454,6 +455,9 @@ static int maindash_last_power;
 static int maindash_last_vin_mv;
 static int maindash_last_cold_x10;
 static int maindash_last_setpoint;
+static uint32_t maindash_last_sleep_s;
+static uint8_t maindash_last_vibration;
+static uint8_t maindash_telemetry_valid;
 
 static void maindash_draw_step(const sm_status_t *status, uint8_t step)
 {
@@ -479,13 +483,15 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         break;
       }
 
-      display_fill_rect(0U, 0U, DISPLAY_WIDTH, 12U, UI_BLACK);
-      display_draw_string(2U, 1U, "JBC245", UI_WHITE, UI_BLACK, 2U);
+      display_fill_rect(0U, 0U, DISPLAY_WIDTH, 12U, UI_HEADER);
+      display_draw_string(2U, 1U, "Chill245", UI_WHITE, UI_HEADER, 2U);
       ui_icon_draw(maindash_top_icon(status), 124U, 2U, top_color);
-      display_draw_string(134U, 1U, top_state, top_color, UI_BLACK, 2U);
+      display_draw_string(134U, 1U, top_state, top_color, UI_HEADER, 2U);
 
-      display_fill_rect(0U, 12U, DISPLAY_WIDTH, 1U, UI_DARK);
-      display_fill_rect(78U, 14U, 1U, 46U, UI_DARK);
+      display_fill_rect(0U, 12U, DISPLAY_WIDTH, 1U, UI_BLUE);
+      display_fill_rect(0U, 63U, DISPLAY_WIDTH, 1U, UI_BLUE);
+      display_fill_rect(74U, 13U, 1U, 50U, UI_BLUE);
+      display_fill_rect(0U, 13U, 2U, 50U, UI_PINK);
 
       maindash_last_top_state = top_state;
       maindash_last_top_color = top_color;
@@ -506,6 +512,25 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         {
           tip_c = 999;
         }
+
+        /* 显示回差：避免在 +-0.5°C 边界来回跳 1°C */
+        if((maindash_cache_valid != 0U) &&
+           (maindash_last_tip >= 0) &&
+           (((tip_c - maindash_last_tip) == 1) ||
+            ((maindash_last_tip - tip_c) == 1)))
+        {
+          float diff = status->tip_c - (float)maindash_last_tip;
+
+          if(diff < 0.0f)
+          {
+            diff = -diff;
+          }
+
+          if(diff < 0.7f)
+          {
+            tip_c = maindash_last_tip;
+          }
+        }
       }
 
       if((maindash_force_draw == 0U) && (maindash_cache_valid != 0U) &&
@@ -514,7 +539,7 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         break;
       }
 
-      maindash_draw_temperature(status);
+      maindash_draw_temperature(status, tip_c);
       maindash_last_tip = tip_c;
       break;
     }
@@ -552,23 +577,23 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         break;
       }
 
-      snprintf(value, sizeof(value), "%d.%dV",
+      fmt_snprintf(value, sizeof(value), "%d.%dV",
                vin_mv / 1000, (vin_mv % 1000) / 100);
-      maindash_draw_info_row(84U, 14U, UI_ICON_PLUG, "VIN", value,
+      maindash_draw_info_row(78U, 13U, UI_ICON_PLUG, "VIN", value,
                              (power_get_fault() != POWER_FAULT_NONE) ?
-                             UI_RED : UI_CYAN);
+                             UI_RED : UI_BLUE);
 
       if(cold_x10_new < 0)
       {
-        snprintf(value, sizeof(value), "-%d.%dC",
+        fmt_snprintf(value, sizeof(value), "-%d.%dC",
                  (-cold_x10_new) / 10, (-cold_x10_new) % 10);
       }
       else
       {
-        snprintf(value, sizeof(value), "%d.%dC",
+        fmt_snprintf(value, sizeof(value), "%d.%dC",
                  cold_x10_new / 10, cold_x10_new % 10);
       }
-      maindash_draw_info_row(84U, 26U, UI_ICON_SNOW, "COLD", value, UI_YELLOW);
+      maindash_draw_info_row(78U, 26U, UI_ICON_SNOW, "COLD", value, UI_WHITE);
 
       maindash_last_vin_mv = vin_key;
       maindash_last_cold_x10 = cold_x10_new;
@@ -587,9 +612,9 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         break;
       }
 
-      snprintf(value, sizeof(value), "%dC", setpoint_new);
-      maindash_draw_info_row(84U, 38U, UI_ICON_TARGET, "SET", value, UI_WHITE);
-      maindash_draw_info_row(84U, 50U, UI_ICON_MODE, "MODE", mode_new, UI_WHITE);
+      fmt_snprintf(value, sizeof(value), "%dC", setpoint_new);
+      maindash_draw_info_row(78U, 39U, UI_ICON_TARGET, "SET", value, UI_WHITE);
+      maindash_draw_info_row(78U, 52U, UI_ICON_MODE, "MODE", mode_new, UI_WHITE);
 
       maindash_last_setpoint = setpoint_new;
       maindash_last_mode_text = mode_new;
@@ -597,7 +622,6 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
     }
 
     case 5U:
-    default:
       status_text = maindash_status_text(status, &status_color);
       if((maindash_force_draw == 0U) && (maindash_cache_valid != 0U) &&
          (maindash_last_status_text == status_text) &&
@@ -606,7 +630,8 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
         break;
       }
 
-      display_fill_rect(0U, 60U, DISPLAY_WIDTH, 12U, UI_BLACK);
+      /* 只清左半区，右侧休眠/震动指示由 step 6 维护 */
+      display_fill_rect(0U, 64U, 82U, 13U, UI_BLACK);
       {
         ui_icon_t status_icon = UI_ICON_POWER;
 
@@ -627,12 +652,50 @@ static void maindash_draw_step(const sm_status_t *status, uint8_t step)
           status_icon = UI_ICON_FLAME;
         }
 
-        ui_icon_draw(status_icon, 2U, 60U, status_color);
+        ui_icon_draw(status_icon, 2U, 65U, status_color);
       }
-      display_draw_string(12U, 61U, status_text, status_color, UI_BLACK, 2U);
+      display_draw_string(12U, 66U, status_text, status_color, UI_BLACK, 2U);
 
       maindash_last_status_text = status_text;
       maindash_last_status_color = status_color;
+      break;
+
+    case 6U:
+    {
+      uint32_t remaining_ms = power_get_sleep_remaining_ms();
+      uint32_t seconds = (remaining_ms + 999U) / 1000U;
+      uint8_t vibration = power_get_vibration_state();
+
+      if(seconds > 9999U)
+      {
+        seconds = 9999U;
+      }
+
+      if((maindash_force_draw == 0U) && (maindash_cache_valid != 0U) &&
+         (maindash_telemetry_valid != 0U) &&
+         (maindash_last_sleep_s == seconds) &&
+         (maindash_last_vibration == vibration))
+      {
+        break;
+      }
+
+      display_fill_rect(82U, 64U, 74U, 13U, UI_BLACK);
+      display_draw_string(84U, 66U, "SLEEP", UI_BLUE, UI_BLACK, 1U);
+
+      /* 震动触发圆点：触发时粉色，静止时暗蓝 */
+      display_fill_rect(107U, 68U, 4U, 4U,
+                        (vibration != 0U) ? UI_PINK : UI_DARK);
+
+      fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
+      display_draw_string(114U, 66U, value, UI_PINK, UI_BLACK, 1U);
+
+      maindash_last_sleep_s = seconds;
+      maindash_last_vibration = vibration;
+      maindash_telemetry_valid = 1U;
+      break;
+    }
+
+    default:
       break;
   }
 }

@@ -14,6 +14,7 @@
   */
 
 #include "menu.h"
+#include "fmt.h"
 #include "display.h"
 #include "statemachine.h"
 #include "pid.h"
@@ -40,14 +41,15 @@
 
 #define UI_BLACK                        (0x0000U)
 #define UI_WHITE                        (0xFFFFU)
-#define UI_GRAY                         (0x8410U)
-#define UI_DARK                         (0x4208U)
-#define UI_PANEL                        (0x2104U)
-#define UI_HEADER                       (0x0010U)
-#define UI_ACCENT                       (0x031FU)
-#define UI_CYAN                         (0x07FFU)
-#define UI_ORANGE                       (0xFD20U)
+#define UI_GRAY                         (0x9CF3U)
+#define UI_DARK                         (0x18C3U)
+#define UI_PANEL                        (0x10A2U)
+#define UI_HEADER                       (0x0861U)
+#define UI_ACCENT                       (0x18E3U)
+#define UI_CYAN                         (0x05FFU)
+#define UI_ORANGE                       (0xFC9FU)
 #define UI_RED                          (0xF800U)
+#define UI_VALUE                        (0xFC9FU)
 
 typedef enum
 {
@@ -114,6 +116,7 @@ static uint8_t menu_nav_depth;
 static uint8_t menu_open_flag;
 static uint8_t menu_need_draw;
 static uint8_t menu_long_handled;
+static uint8_t menu_quick_edit;
 static uint32_t menu_defaults_arm_until;
 
 static const menu_item_t *menu_edit_item;
@@ -134,6 +137,7 @@ static const char *const menu_ch224a_options[] =
 };
 
 static void menu_action_back(void);
+static void menu_action_sleep(void);
 static void menu_action_exit(void);
 static void menu_action_autotune(void);
 static void menu_action_cancel_autotune(void);
@@ -177,6 +181,7 @@ static const menu_item_t menu_sleep_items[] =
   { "VOLT HYST",    MENU_ITEM_FLOAT, &menu_config.voltage_hysteresis_v, NULL, NULL, 0, 0.1f, 0.0f,   3.0f,    1U, "V",  NULL },
   { "TRIP TIME",    MENU_ITEM_FLOAT, &menu_config.voltage_trip_ms,   NULL, NULL, 0, 10.0f,  10.0f,  5000.0f, 0U, "ms", NULL },
   { "RECOVERY",     MENU_ITEM_FLOAT, &menu_config.voltage_recovery_ms, NULL, NULL, 0, 100.0f, 100.0f, 60000.0f, 0U, "ms", NULL },
+  { "SLEEP NOW",    MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_sleep },
   { "BACK",         MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
 };
 
@@ -196,8 +201,6 @@ static const menu_item_t menu_protect_items[] =
 
 static const menu_item_t menu_ui_items[] =
 {
-  { "AUTO ROLL", MENU_ITEM_BOOL,  &menu_config.autoroll_enabled, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
-  { "ROLL TIME", MENU_ITEM_FLOAT, &menu_config.autoroll_s,       NULL, NULL, 0, 5.0f, 5.0f, 60.0f, 0U, "s", NULL },
   { "BUZZER",    MENU_ITEM_BOOL,  &menu_config.buzzer_enabled,   NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "VOLUME",    MENU_ITEM_FLOAT, &menu_config.buzzer_volume,    NULL, NULL, 0, 10.0f, 0.0f, 100.0f, 0U, "%", NULL },
   { "MAIN PAGE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_main_page },
@@ -209,7 +212,6 @@ static const menu_item_t menu_boost_items[] =
   { "BOOST TEMP", MENU_ITEM_FLOAT, &menu_config.boost_offset_c,  NULL, NULL, 0, 5.0f, 0.0f, 200.0f, 0U, "C", NULL },
   { "DROP TEMP",  MENU_ITEM_FLOAT, &menu_config.boost_drop_c,    NULL, NULL, 0, 5.0f, 5.0f, 100.0f, 0U, "C", NULL },
   { "BOOST TIME", MENU_ITEM_FLOAT, &menu_config.boost_timeout_s, NULL, NULL, 0, 5.0f, 10.0f, 1800.0f, 0U, "s", NULL },
-  { "SET STEP",   MENU_ITEM_FLOAT, &menu_config.setpoint_step_c, NULL, NULL, 0, 1.0f, 1.0f, 100.0f, 0U, "C", NULL },
   { "BACK",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
 };
 
@@ -217,6 +219,8 @@ static const menu_item_t menu_system_items[] =
 {
   { "START AUTOTUNE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_autotune },
   { "CANCEL TUNE",    MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_cancel_autotune },
+  { "TEMP STEP",      MENU_ITEM_FLOAT,  &menu_config.setpoint_step_c, NULL, NULL, 0, 1.0f, 1.0f, 100.0f, 0U, "C", NULL },
+  { "TIME STEP",      MENU_ITEM_FLOAT,  &menu_config.time_step_s,     NULL, NULL, 0, 1.0f, 1.0f, 600.0f, 0U, "s", NULL },
   { "HEATER ON/OFF",  MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_heater_toggle },
   { "CLEAR FAULT",    MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_clear_fault },
   { "HMS SELF TEST",  MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_hms },
@@ -422,6 +426,13 @@ uint8_t menu_is_open(void)
 
 static void menu_back(void)
 {
+  if(menu_quick_edit != 0U)
+  {
+    menu_quick_edit = 0U;
+    menu_close();
+    return;
+  }
+
   if(menu_nav.view == MENU_VIEW_EDIT)
   {
     menu_pop_nav();
@@ -458,6 +469,29 @@ static void menu_start_edit(const menu_item_t *item)
   menu_need_draw = 1U;
 }
 
+void menu_open_quick_setpoint(void)
+{
+  if(menu_open_flag != 0U)
+  {
+    return;
+  }
+
+  menu_open();
+
+  if(menu_open_flag == 0U)
+  {
+    return;
+  }
+
+  menu_nav.page = &menu_page_temperature;
+  menu_nav.selected = 0U;
+  menu_nav.first = 0U;
+  menu_nav_depth = 0U;
+
+  menu_start_edit(&menu_page_temperature.items[0]);
+  menu_quick_edit = 1U;
+}
+
 static void menu_adjust_edit(int8_t direction)
 {
   if(menu_edit_item == NULL)
@@ -488,6 +522,14 @@ static void menu_confirm_edit(void)
   }
 
   menu_edit_item = NULL;
+
+  if(menu_quick_edit != 0U)
+  {
+    menu_quick_edit = 0U;
+    menu_close();
+    return;
+  }
+
   menu_pop_nav();
 }
 
@@ -568,7 +610,7 @@ static void menu_build_point_page(uint8_t curve_kind, uint8_t index)
 
     menu_dynamic_page.count = 5U;
 
-    snprintf(menu_dynamic_title, sizeof(menu_dynamic_title),
+    fmt_snprintf(menu_dynamic_title, sizeof(menu_dynamic_title),
              "CUSTOM %u/%u", (unsigned)(index + 1U),
              (unsigned)PID_CUSTOM_POINTS);
   }
@@ -623,7 +665,7 @@ static void menu_build_point_page(uint8_t curve_kind, uint8_t index)
 
     menu_dynamic_page.count = 3U;
 
-    snprintf(menu_dynamic_title, sizeof(menu_dynamic_title),
+    fmt_snprintf(menu_dynamic_title, sizeof(menu_dynamic_title),
              "CAL %u/%u", (unsigned)(index + 1U),
              (unsigned)TEMP_TC_CAL_POINTS);
   }
@@ -800,6 +842,12 @@ static void menu_action_exit(void)
   menu_close();
 }
 
+static void menu_action_sleep(void)
+{
+  menu_close();
+  power_sleep();
+}
+
 static void menu_action_autotune(void)
 {
   eeprom_apply();
@@ -887,10 +935,10 @@ static void menu_draw_header(const char *title, const char *counter)
   {
     counter_x = (uint16_t)(DISPLAY_WIDTH -
                            display_string_width(counter, 1U) - 3U);
-    display_draw_string(counter_x, 4U, counter, UI_CYAN, UI_HEADER, 1U);
+    display_draw_string(counter_x, 4U, counter, UI_ORANGE, UI_HEADER, 1U);
   }
 
-  display_draw_hline(0U, 12U, DISPLAY_WIDTH, UI_DARK);
+  display_draw_hline(0U, 12U, DISPLAY_WIDTH, UI_ORANGE);
 }
 
 static void menu_draw_footer(const char *text)
@@ -916,6 +964,23 @@ static void menu_draw_arrow(uint16_t x, uint16_t y, uint16_t color)
                     (int16_t)(x + 4U), (int16_t)(y + 5U), color);
 }
 
+static float menu_time_step(void)
+{
+  float step_s = menu_config.time_step_s;
+
+  if(step_s < 1.0f)
+  {
+    step_s = 1.0f;
+  }
+
+  if(step_s > 600.0f)
+  {
+    step_s = 600.0f;
+  }
+
+  return step_s;
+}
+
 static float menu_item_step(const menu_item_t *item)
 {
   if(item == NULL)
@@ -923,16 +988,23 @@ static float menu_item_step(const menu_item_t *item)
     return 1.0f;
   }
 
-  /* SET STEP 自己始终 1°C 调整，避免用自身值当步进 */
-  if(item->value == &menu_config.setpoint_step_c)
+  /* 两个步进设置项自己始终按 1 调整 */
+  if((item->value == &menu_config.setpoint_step_c) ||
+     (item->value == &menu_config.time_step_s))
   {
     return 1.0f;
   }
 
-  /* 所有单位是 °C 的设定值统一使用自定义设置步进 */
+  /* 温度步进对所有 °C 项生效 */
   if((item->unit != NULL) && (strcmp(item->unit, "C") == 0))
   {
     return onekeyboost_get_setpoint_step();
+  }
+
+  /* 秒级时间项使用 TIME STEP */
+  if((item->unit != NULL) && (strcmp(item->unit, "s") == 0))
+  {
+    return menu_time_step();
   }
 
   return item->step;
@@ -974,6 +1046,61 @@ static ui_icon_t menu_item_icon(const menu_item_t *item){
   }
 }
 
+/* newlib-nano 未链接浮点 printf，这里用整数缩放格式化，避免数字变空 */
+static void menu_format_float(char *text, uint16_t size, float value,
+                              uint8_t decimals, const char *unit)
+{
+  uint32_t scale = 1U;
+  uint32_t abs_scaled;
+  uint32_t whole;
+  uint32_t frac;
+  int32_t scaled;
+  const char *sign;
+  const char *suffix;
+
+  if((text == NULL) || (size == 0U))
+  {
+    return;
+  }
+
+  if(decimals > 2U)
+  {
+    decimals = 2U;
+  }
+
+  if(decimals == 1U)
+  {
+    scale = 10U;
+  }
+  else if(decimals == 2U)
+  {
+    scale = 100U;
+  }
+
+  scaled = (int32_t)((value * (float)scale) +
+                     ((value >= 0.0f) ? 0.5f : -0.5f));
+  sign = (scaled < 0) ? "-" : "";
+  abs_scaled = (scaled < 0) ? (uint32_t)(-scaled) : (uint32_t)scaled;
+  whole = abs_scaled / scale;
+  frac = abs_scaled % scale;
+  suffix = (unit != NULL) ? unit : "";
+
+  if(decimals == 0U)
+  {
+    fmt_snprintf(text, size, "%s%lu%s", sign, (unsigned long)whole, suffix);
+  }
+  else if(decimals == 1U)
+  {
+    fmt_snprintf(text, size, "%s%lu.%01lu%s", sign, (unsigned long)whole,
+             (unsigned long)frac, suffix);
+  }
+  else
+  {
+    fmt_snprintf(text, size, "%s%lu.%02lu%s", sign, (unsigned long)whole,
+             (unsigned long)frac, suffix);
+  }
+}
+
 static void menu_format_item_value(const menu_item_t *item,
                                    char *text, uint16_t size)
 {
@@ -989,17 +1116,16 @@ static void menu_format_item_value(const menu_item_t *item,
     case MENU_ITEM_FLOAT:
       if(item->value != NULL)
       {
-        snprintf(text, size, "%.*f%s",
-                 (int)item->decimals,
-                 *(float *)item->value,
-                 (item->unit != NULL) ? item->unit : "");
+        menu_format_float(text, size, *(float *)item->value,
+                          item->decimals,
+                          (item->unit != NULL) ? item->unit : "");
       }
       break;
 
     case MENU_ITEM_BOOL:
       if(item->value != NULL)
       {
-        snprintf(text, size, "%s",
+        fmt_snprintf(text, size, "%s",
                  (*(uint8_t *)item->value != 0U) ? "ON" : "OFF");
       }
       break;
@@ -1011,11 +1137,11 @@ static void menu_format_item_value(const menu_item_t *item,
 
         if(index < item->option_count)
         {
-          snprintf(text, size, "%s", item->options[index]);
+          fmt_snprintf(text, size, "%s", item->options[index]);
         }
         else
         {
-          snprintf(text, size, "?");
+          fmt_snprintf(text, size, "?");
         }
       }
       break;
@@ -1056,7 +1182,7 @@ static void menu_draw_list(void)
 
     item = &menu_nav.page->items[index];
     y = (uint8_t)(MENU_ROW_Y + (row * MENU_ROW_H));
-    color = (index == menu_nav.selected) ? UI_WHITE : UI_CYAN;
+    color = (index == menu_nav.selected) ? UI_VALUE : UI_CYAN;
     background = (index == menu_nav.selected) ? UI_ACCENT : UI_BLACK;
     has_arrow = ((item->type == MENU_ITEM_SUBMENU) ||
                  (item->type == MENU_ITEM_CURVE_CUSTOM) ||
@@ -1064,14 +1190,15 @@ static void menu_draw_list(void)
 
     if(index == menu_nav.selected)
     {
-      display_fill_rect(1U, y, (uint16_t)(DISPLAY_WIDTH - 2U),
+      display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
+      display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
     }
 
     ui_icon_draw(menu_item_icon(item), 4U, (uint16_t)(y + 1U),
-                 (index == menu_nav.selected) ? UI_WHITE : UI_CYAN);
+                 (index == menu_nav.selected) ? UI_WHITE : UI_GRAY);
     display_draw_string(14U, (uint16_t)(y + 3U), item->label,
-                        (index == menu_nav.selected) ? UI_WHITE : UI_WHITE,
+                        (index == menu_nav.selected) ? UI_WHITE : UI_GRAY,
                         background, 1U);
 
     menu_format_item_value(item, value, sizeof(value));
@@ -1116,31 +1243,36 @@ static void menu_draw_curve(void)
 
     if(index == menu_nav.selected)
     {
-      display_fill_rect(1U, y, (uint16_t)(DISPLAY_WIDTH - 2U),
+      display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
+      display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
     }
 
     ui_icon_draw(UI_ICON_CURVE, 4U, (uint16_t)(y + 1U),
-                 (index == menu_nav.selected) ? UI_WHITE : UI_CYAN);
-    snprintf(label, sizeof(label), "%02u", (unsigned)(index + 1U));
+                 (index == menu_nav.selected) ? UI_WHITE : UI_GRAY);
+    fmt_snprintf(label, sizeof(label), "%02u", (unsigned)(index + 1U));
     display_draw_string(14U, (uint16_t)(y + 3U), label, UI_WHITE,
                         background, 1U);
 
     if(menu_nav.curve_kind == (uint8_t)MENU_CURVE_CUSTOM)
     {
-      snprintf(value, sizeof(value), "T%d K%.2f",
+      char kp[12];
+
+      menu_format_float(kp, sizeof(kp),
+                        menu_config.custom_points[index].gain.kp, 2U, "");
+      fmt_snprintf(value, sizeof(value), "T%d K%s",
                (int)(menu_config.custom_points[index].temp_c + 0.5f),
-               menu_config.custom_points[index].gain.kp);
+               kp);
     }
     else
     {
-      snprintf(value, sizeof(value), "A%d T%d",
+      fmt_snprintf(value, sizeof(value), "A%d T%d",
                (int)(menu_config.cal_adc[index] + 0.5f),
                (int)(menu_config.cal_temp[index] + 0.5f));
     }
 
     display_draw_string(34U, (uint16_t)(y + 3U), value,
-                        (index == menu_nav.selected) ? UI_WHITE : UI_CYAN,
+                        (index == menu_nav.selected) ? UI_VALUE : UI_CYAN,
                         background, 1U);
   }
 }
@@ -1148,7 +1280,10 @@ static void menu_draw_curve(void)
 static void menu_draw_edit(void)
 {
   char value[32];
-  char range[48];
+  char range[64];
+  char min_text[12];
+  char max_text[12];
+  char step_text[12];
   uint16_t width;
   uint16_t x;
   uint16_t scale = 3U;
@@ -1159,11 +1294,11 @@ static void menu_draw_edit(void)
   }
 
   display_fill_rect(6U, 18U, 148U, 26U, UI_PANEL);
-  display_draw_rect(6U, 18U, 148U, 26U, UI_GRAY);
+  display_draw_rect(6U, 18U, 148U, 26U, UI_ACCENT);
 
-  snprintf(value, sizeof(value), "%.*f%s",
-           (int)menu_edit_item->decimals, menu_edit_value,
-           (menu_edit_item->unit != NULL) ? menu_edit_item->unit : "");
+  menu_format_float(value, sizeof(value), menu_edit_value,
+                    menu_edit_item->decimals,
+                    (menu_edit_item->unit != NULL) ? menu_edit_item->unit : "");
 
   width = display_string_width(value, scale);
 
@@ -1174,11 +1309,13 @@ static void menu_draw_edit(void)
   }
 
   x = (uint16_t)((DISPLAY_WIDTH - width) / 2U);
-  display_draw_string(x, 23U, value, UI_WHITE, UI_PANEL, scale);
+  display_draw_string(x, 23U, value, UI_VALUE, UI_PANEL, scale);
 
-  snprintf(range, sizeof(range), "MIN %.2f  MAX %.2f  STEP %.2f",
-           menu_edit_item->min_value, menu_edit_item->max_value,
-           menu_item_step(menu_edit_item));
+  menu_format_float(min_text, sizeof(min_text), menu_edit_item->min_value, 2U, "");
+  menu_format_float(max_text, sizeof(max_text), menu_edit_item->max_value, 2U, "");
+  menu_format_float(step_text, sizeof(step_text), menu_item_step(menu_edit_item), 2U, "");
+  fmt_snprintf(range, sizeof(range), "MIN %s  MAX %s  STEP %s",
+           min_text, max_text, step_text);
   display_draw_string(4U, 51U, range, UI_GRAY, UI_BLACK, 1U);
 
   menu_draw_footer("PREV/NXT ADJ  ENT OK  HOLD BACK");
@@ -1201,7 +1338,7 @@ static void menu_draw_header_counter(char *text, uint16_t size)
     count = 0U;
   }
 
-  snprintf(text, size, "%u/%u",
+  fmt_snprintf(text, size, "%u/%u",
            (unsigned)(menu_nav.selected + 1U), (unsigned)count);
 }
 
@@ -1263,6 +1400,15 @@ static void menu_draw(void)
 
 static void menu_on_button(button_id_t button, button_event_t event)
 {
+  if(event == BUTTON_EVENT_DOUBLE_CLICK)
+  {
+    if((button == BUTTON_MENU) && (menu_open_flag == 0U))
+    {
+      menu_open_quick_setpoint();
+    }
+    return;
+  }
+
   if(menu_open_flag == 0U)
   {
     return;
@@ -1304,6 +1450,8 @@ void menu_init(void)
   menu_nav_depth = 0U;
 
   (void)buttons_register_callback(BUTTON_MENU, BUTTON_EVENT_CLICK,
+                                  menu_on_button);
+  (void)buttons_register_callback(BUTTON_MENU, BUTTON_EVENT_DOUBLE_CLICK,
                                   menu_on_button);
   (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_CLICK,
                                   menu_on_button);
