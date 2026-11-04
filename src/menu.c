@@ -173,6 +173,7 @@ static const menu_item_t menu_temperature_items[] =
 static const menu_item_t menu_sleep_items[] =
 {
   { "SLEEP TIME",   MENU_ITEM_FLOAT, &menu_config.stationary_s,      NULL, NULL, 0, 5.0f,   5.0f,   3600.0f, 0U, "s",  NULL },
+  { "SLEEP PWR",    MENU_ITEM_FLOAT, &menu_config.sleep_power_pct,   NULL, NULL, 0, 1.0f,   0.0f,   100.0f,  0U, "%",  NULL },
   { "SLEEP TEMP",   MENU_ITEM_FLOAT, &menu_config.reduced_temp_c,    NULL, NULL, 0, 5.0f,   50.0f,  400.0f,  0U, "C",  NULL },
   { "HEAT OFF T",   MENU_ITEM_FLOAT, &menu_config.reduced_off_s,     NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },
   { "LCD OFF T",    MENU_ITEM_FLOAT, &menu_config.backlight_off_s,   NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },

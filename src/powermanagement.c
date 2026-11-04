@@ -13,7 +13,7 @@
   *   ACTIVE --静止超时--> REDUCED --继续静止超时--> HEATER_OFF
   *          --继续静止超时--> BACKLIGHT_OFF
   *
-  * REDUCED 状态检测到震动可唤醒；HEATER_OFF/BACKLIGHT_OFF 只能按键唤醒。
+  * REDUCED / HEATER_OFF 或手动 DISABLED 状态检测到震动可唤醒；BACKLIGHT_OFF 只能按键唤醒。
   **************************************************************************
   */
 
@@ -26,9 +26,10 @@
 #include <stddef.h>
 
 #define POWER_VOLTAGE_SAMPLE_MS         (10U)
-#define POWER_VIBRATION_DEBOUNCE_MS     (30U)
-#define POWER_ACTIVITY_POWER_MIN        (30U)
-#define POWER_ACTIVITY_ERROR_C          (5.0f)
+#define POWER_VIBRATION_ACTIVITY_MS     (100U)
+#define POWER_MANUAL_SLEEP_WAKE_BLOCK_MS (30000U)
+#define POWER_LOW_POWER_DRAIN           (3U)
+#define POWER_LOW_POWER_DEFAULT         (13U)
 #define POWER_I2C_TIMEOUT               (100000U)
 #define POWER_MIN_TIMEOUT_MS            (1000U)
 
@@ -37,6 +38,7 @@ static power_fault_t power_fault;
 static power_fault_callback_t power_fault_callback;
 
 static uint32_t power_stationary_timeout_ms;
+static uint8_t power_low_power_threshold;
 static float power_reduced_temp_c;
 static uint32_t power_reduced_off_timeout_ms;
 static uint32_t power_backlight_off_timeout_ms;
@@ -53,7 +55,10 @@ static uint32_t power_voltage_bad_since_ms;
 static uint32_t power_voltage_good_since_ms;
 
 static uint32_t power_last_motion_ms;
+static uint32_t power_low_power_accum_ms;
+static uint32_t power_low_power_last_ms;
 static uint32_t power_vibration_latch_ms;
+static uint32_t power_vibration_wake_block_until_ms;
 static uint32_t power_vibration_raw_change_ms;
 static uint32_t power_state_enter_ms;
 static uint8_t power_vibration_raw_level;
@@ -281,12 +286,9 @@ float power_get_ch224a_voltage(void)
 
 void power_notify_activity(uint32_t now_ms)
 {
-  uint8_t level = power_read_vibration_level();
-
   power_last_motion_ms = now_ms;
-  power_vibration_raw_level = level;
-  power_vibration_stable_level = level;
-  power_vibration_raw_change_ms = now_ms;
+  power_low_power_accum_ms = 0U;
+  power_low_power_last_ms = now_ms;
 }
 
 power_state_t power_get_state(void)
@@ -323,7 +325,7 @@ uint32_t power_get_sleep_remaining_ms(void)
   {
     case POWER_STATE_ACTIVE:
       timeout = power_stationary_timeout_ms;
-      elapsed = (uint32_t)(now_ms - power_last_motion_ms);
+      elapsed = power_low_power_accum_ms;
       break;
 
     case POWER_STATE_REDUCED:
@@ -398,6 +400,7 @@ static void power_enter_reduced(uint32_t now_ms)
 
   power_state = POWER_STATE_REDUCED;
   power_state_enter_ms = now_ms;
+  power_low_power_accum_ms = 0U;
 }
 
 static void power_enter_heater_off(uint32_t now_ms)
@@ -424,7 +427,10 @@ static void power_wake_now(uint32_t now_ms)
 {
   display_backlight_set(1U);
 
+  power_vibration_wake_block_until_ms = 0U;
   power_last_motion_ms = now_ms;
+  power_low_power_accum_ms = 0U;
+  power_low_power_last_ms = now_ms;
   power_state_enter_ms = now_ms;
   power_vibration_raw_level = power_read_vibration_level();
   power_vibration_stable_level = power_vibration_raw_level;
@@ -478,6 +484,9 @@ static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
   }
 
   now_ms = sm_get_uptime_ms();
+
+  /* 按键手动休眠后 30 s 内屏蔽震动唤醒，避免放下烙铁时立刻被震动叫醒 */
+  power_vibration_wake_block_until_ms = now_ms + POWER_MANUAL_SLEEP_WAKE_BLOCK_MS;
 
   /* 手动休眠也要记住原设定温度，唤醒后恢复 */
   if(power_saved_setpoint_valid == 0U)
@@ -592,22 +601,7 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
-  /* 使用状态判定：正在大功率加热或明显偏离设定温度，视为有人使用 */
-  if(status.temp_valid != 0U)
-  {
-    float error_c = status.tip_c - status.setpoint_c;
-
-    if(error_c < 0.0f)
-    {
-      error_c = -error_c;
-    }
-
-    if((status.power >= POWER_ACTIVITY_POWER_MIN) ||
-       (error_c >= POWER_ACTIVITY_ERROR_C))
-    {
-      power_notify_activity(now_ms);
-    }
-  }
+  /* 休眠计时只由震动/按键等活动输入重置，不再根据功率或温度误差推断使用状态 */
 
   power_voltage_mv = power_vin_raw_to_mv(status.vin_raw);
 
@@ -707,6 +701,7 @@ void power_init(void)
   gpio_init_type gpio_init_struct;
 
   power_stationary_timeout_ms = POWER_DEFAULT_STATIONARY_TIMEOUT_MS;
+  power_low_power_threshold = POWER_LOW_POWER_DEFAULT;
   power_reduced_temp_c = POWER_DEFAULT_REDUCED_TEMP_C;
   power_reduced_off_timeout_ms = POWER_DEFAULT_REDUCED_OFF_TIMEOUT_MS;
   power_backlight_off_timeout_ms = POWER_DEFAULT_BACKLIGHT_OFF_TIMEOUT_MS;
@@ -754,11 +749,14 @@ void power_init(void)
   power_voltage_bad_since_ms = 0U;
   power_voltage_good_since_ms = 0U;
   power_last_motion_ms = sm_get_uptime_ms();
+  power_low_power_accum_ms = 0U;
+  power_low_power_last_ms = power_last_motion_ms;
   power_state_enter_ms = power_last_motion_ms;
   power_vibration_raw_level = power_read_vibration_level();
   power_vibration_stable_level = power_vibration_raw_level;
   power_vibration_raw_change_ms = power_last_motion_ms;
   power_vibration_latch_ms = 0U;
+  power_vibration_wake_block_until_ms = 0U;
   power_saved_setpoint_valid = 0U;
   power_fault_heater_was_enabled = 0U;
   power_wake_pending = 0U;
@@ -779,7 +777,10 @@ void power_init(void)
 void power_update(uint32_t now_ms)
 {
   uint8_t level;
-  uint8_t motion;
+  uint8_t motion_activity;
+  sm_status_t status;
+  uint32_t dt_ms;
+  uint32_t drain_ms;
 
   if(power_initialized == 0U)
   {
@@ -789,27 +790,21 @@ void power_update(uint32_t now_ms)
   power_voltage_task(now_ms);
 
   level = power_read_vibration_level();
+  motion_activity = 0U;
 
   if(level != power_vibration_raw_level)
   {
     power_vibration_raw_level = level;
     power_vibration_raw_change_ms = now_ms;
+    power_vibration_latch_ms = now_ms + 500U;
   }
 
-  motion = 0U;
-
   if(((uint32_t)(now_ms - power_vibration_raw_change_ms) >=
-      POWER_VIBRATION_DEBOUNCE_MS) &&
+      POWER_VIBRATION_ACTIVITY_MS) &&
      (power_vibration_stable_level != power_vibration_raw_level))
   {
     power_vibration_stable_level = power_vibration_raw_level;
-
-    /* 只有稳定拉低才认为是一次真实震动 */
-    if(power_vibration_stable_level == 0U)
-    {
-      motion = 1U;
-      power_vibration_latch_ms = now_ms + 500U;
-    }
+    motion_activity = 1U;
   }
 
   if(power_fault != POWER_FAULT_NONE)
@@ -817,23 +812,50 @@ void power_update(uint32_t now_ms)
     return;
   }
 
+  dt_ms = (uint32_t)(now_ms - power_low_power_last_ms);
+  power_low_power_last_ms = now_ms;
+  if(dt_ms > 1000U)
+  {
+    dt_ms = 1000U;
+  }
+
   switch(power_state)
   {
     case POWER_STATE_ACTIVE:
-      if(motion != 0U)
+      if((motion_activity != 0U) &&
+         (sm_get_state() == SM_STATE_DISABLED) &&
+         (sm_is_heater_enabled() == 0U))
       {
-        power_last_motion_ms = now_ms;
+        /* 手动 HEATER OFF / SM_STATE_DISABLED：稳定震动边沿恢复加热 */
+        (void)sm_set_heater_enabled(1U);
       }
 
-      if((uint32_t)(now_ms - power_last_motion_ms) >=
-         power_stationary_timeout_ms)
+      /* 休眠只看功率：≤15% 的功率占绝对多数才累积休眠时间 */
+      sm_get_status(&status);
+      if(status.power <= power_low_power_threshold)
+      {
+        power_low_power_accum_ms += dt_ms;
+        if(power_low_power_accum_ms > power_stationary_timeout_ms)
+        {
+          power_low_power_accum_ms = power_stationary_timeout_ms;
+        }
+      }
+      else
+      {
+        drain_ms = dt_ms * POWER_LOW_POWER_DRAIN;
+        power_low_power_accum_ms =
+          (power_low_power_accum_ms > drain_ms) ?
+          (power_low_power_accum_ms - drain_ms) : 0U;
+      }
+
+      if(power_low_power_accum_ms >= power_stationary_timeout_ms)
       {
         power_enter_reduced(now_ms);
       }
       break;
 
     case POWER_STATE_REDUCED:
-      if(motion != 0U)
+      if(motion_activity != 0U)
       {
         power_wake_now(now_ms);
       }
@@ -845,8 +867,15 @@ void power_update(uint32_t now_ms)
       break;
 
     case POWER_STATE_HEATER_OFF:
-      if((uint32_t)(now_ms - power_state_enter_ms) >=
-         power_backlight_off_timeout_ms)
+      if((motion_activity != 0U) &&
+         ((int32_t)(power_vibration_wake_block_until_ms - now_ms) <= 0))
+      {
+        /* 手动 disabled 状态下震动直接唤醒并恢复加热 */
+        power_wake_now(now_ms);
+        (void)sm_set_heater_enabled(1U);
+      }
+      else if((uint32_t)(now_ms - power_state_enter_ms) >=
+              power_backlight_off_timeout_ms)
       {
         power_enter_backlight_off(now_ms);
       }
@@ -869,6 +898,21 @@ void power_set_stationary_timeout_ms(uint32_t ms)
 uint32_t power_get_stationary_timeout_ms(void)
 {
   return power_stationary_timeout_ms;
+}
+
+void power_set_low_power_threshold(uint8_t percent)
+{
+  if(percent > 100U)
+  {
+    percent = 100U;
+  }
+
+  power_low_power_threshold = percent;
+}
+
+uint8_t power_get_low_power_threshold(void)
+{
+  return power_low_power_threshold;
 }
 
 float power_get_reduced_temperature(void)

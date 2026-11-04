@@ -217,6 +217,8 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
   }
 
   if((params->stationary_s < 1.0f) ||
+     (params->sleep_power_pct < 0.0f) ||
+     (params->sleep_power_pct > 100.0f) ||
      (params->reduced_off_s < 1.0f) ||
      (params->backlight_off_s < 1.0f) ||
      (params->autoroll_s < 1.0f))
@@ -284,6 +286,8 @@ void eeprom_capture_current(void)
 
   g_eeprom_params.stationary_s =
     (float)power_get_stationary_timeout_ms() / 1000.0f;
+  g_eeprom_params.sleep_power_pct =
+    (float)power_get_low_power_threshold();
   g_eeprom_params.reduced_temp_c = power_get_reduced_temperature();
   g_eeprom_params.reduced_off_s =
     (float)power_get_reduced_off_timeout_ms() / 1000.0f;
@@ -351,6 +355,8 @@ void eeprom_apply(void)
 
   power_set_stationary_timeout_ms(
     (uint32_t)((g_eeprom_params.stationary_s * 1000.0f) + 0.5f));
+  power_set_low_power_threshold(
+    (uint8_t)(g_eeprom_params.sleep_power_pct + 0.5f));
   power_set_reduced_temperature(g_eeprom_params.reduced_temp_c);
   power_set_reduced_off_timeout_ms(
     (uint32_t)((g_eeprom_params.reduced_off_s * 1000.0f) + 0.5f));
@@ -438,6 +444,7 @@ void eeprom_init(void)
     g_eeprom_params.time_step_s = 5.0f;
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
+    g_eeprom_params.sleep_power_pct = 13.0f;
 
     if((newest != NULL) && (eeprom_params_sane(&newest->params) == 0U))
     {

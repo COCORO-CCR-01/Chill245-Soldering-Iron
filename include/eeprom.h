@@ -40,6 +40,7 @@ typedef struct
   float cal_ref_c;
 
   float stationary_s;
+  float sleep_power_pct;
   float reduced_temp_c;
   float reduced_off_s;
   float backlight_off_s;

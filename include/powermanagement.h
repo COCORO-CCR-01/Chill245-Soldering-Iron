@@ -165,11 +165,13 @@ void power_notify_activity(uint32_t now_ms);
 
 /* 休眠参数读取/设置 */
 uint32_t power_get_stationary_timeout_ms(void);
+uint8_t power_get_low_power_threshold(void);
 float power_get_reduced_temperature(void);
 uint32_t power_get_reduced_off_timeout_ms(void);
 uint32_t power_get_backlight_off_timeout_ms(void);
 
 void power_set_stationary_timeout_ms(uint32_t ms);
+void power_set_low_power_threshold(uint8_t percent);
 void power_set_reduced_temperature(float celsius);
 void power_set_reduced_off_timeout_ms(uint32_t ms);
 void power_set_backlight_off_timeout_ms(uint32_t ms);

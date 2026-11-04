@@ -406,7 +406,9 @@ HEATER_OFF --继续静止 5 min--> BACKLIGHT_OFF（关闭背光）
 ```
 
 - `REDUCED` 状态检测到震动会恢复原目标温度并回到 `ACTIVE`
-- `HEATER_OFF` / `BACKLIGHT_OFF` 状态震动不唤醒
+- `HEATER_OFF` 状态检测到震动会直接唤醒并恢复休眠前加热状态
+- 手动 `HEATER OFF` / `SM_STATE_DISABLED` 状态检测到震动会直接恢复加热
+- `BACKLIGHT_OFF` 状态只能按键唤醒
 - 任意按键 `PRESS` 都会唤醒；是否恢复加热取决于进入休眠的方式
 - 按键唤醒由 `power_init()` 自动注册到 `buttons.h`
 - 菜单 `SLEEP / POWER -> SLEEP NOW` 可立即手动休眠；也可调用 `power_sleep()`
@@ -866,8 +868,11 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 
 - NTC 分压默认按“10 kΩ 上拉到 VREF、NTC 下拉到 GND”计算；实际相反时修改 `src/temp.c` 的 `TEMP_NTC_CONNECT_TO_GND`。
 - 输入电压默认按 **10 kΩ / 1 kΩ 分压（VCC/11）**；实际电阻不同时修改 `powermanagement.h` 的 `POWER_VIN_DIVIDER_R1/R2`。
-- 震动开关默认 PB1 静止为高、震动拉低；只有低电平稳定 **30 ms** 才判为一次震动，避免抖动误重置休眠计时。
-- 使用状态也会保持唤醒：加热功率 ≥30% 或热端偏离设定温度 ≥5°C 时，自动重置休眠计时。
+- 震动开关默认 PB1 静止为高、震动拉低；唤醒使用持续 **100 ms** 的稳定电平变化，短噪声不唤醒。
+- 休眠不再由震动决定：ACTIVE 状态累计“低功率”的时间，高功率按 3 倍速泄放；低功率占绝对多数并累积到休眠时间后进入 REDUCED。
+- `SLEEP / POWER -> SLEEP PWR` 可设置低功率阈值，默认 **13%**，范围 0~100%。
+- 按键手动休眠后 **30 秒内屏蔽震动唤醒**，30 秒后恢复。
+- 按键、菜单、Boost 会清零低功率累计。
 - CH224A 默认地址 0x22/0x23 自动探测，电压寄存器 0x0A；如果模块地址或寄存器不同，修改 `powermanagement.h` 的 `POWER_CH224A_*`。
 - 热电偶默认使用 `T=-1.1948e-6*N^2+0.19073*N+23.78`，上板后优先用 `SYSTEM -> TIP CAL` 做 100~400°C 七点校准；也可在 `TEMPERATURE -> TEMP CAL` 手动录入 10 点 `ADC/温度` 并打开 `CAL ENABLE`。
 - 保护阈值集中在 `src/verifyheater.c` 顶部宏，按实际加热器调整。

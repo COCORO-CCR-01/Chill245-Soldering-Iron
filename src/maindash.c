@@ -1007,6 +1007,7 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
   int tens;
   int units;
   uint8_t pair;
+  uint8_t show_set;
   char value[20];
   char text[20];
 
@@ -1035,11 +1036,14 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
 
   display_fill_rect(0U, 12U, DISPLAY_WIDTH, 1U, UI_BLUE);
 
-  /* 左侧只显示热端温度 */
+  /* 左侧只显示热端温度；按键调温后 2 s 内显示设定温度 */
   display_fill_rect(0U, 13U, 74U, 50U, UI_BLACK);
 
-  tip_c = (status->temp_valid != 0U) ?
-          maindash_round_float(status->tip_c) : 0;
+  show_set = ((int32_t)(maindash_alt_setpoint_until_ms - now_ms) > 0) ? 1U : 0U;
+  tip_c = show_set ?
+          maindash_round_float(status->setpoint_c) :
+          ((status->temp_valid != 0U) ?
+           maindash_round_float(status->tip_c) : 0);
   if(tip_c < 0)
   {
     tip_c = 0;
@@ -1049,7 +1053,7 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
     tip_c = 999;
   }
 
-  if(status->temp_valid == 0U)
+  if((show_set == 0U) && (status->temp_valid == 0U))
   {
     display_draw_string(13U, 25U, "---", UI_PINK, UI_BLACK, 4U);
   }
