@@ -43,6 +43,30 @@ static void boot_wdt_relax(void)
 }
 
 /* 非菜单界面按键仲裁 */
+static void main_adjust_setpoint(int8_t direction)
+{
+  float setpoint = sm_get_setpoint();
+  float step = onekeyboost_get_setpoint_step();
+
+  setpoint += (step * (float)direction);
+
+  if(setpoint < 0.0f)
+  {
+    setpoint = 0.0f;
+  }
+
+  if(setpoint > 450.0f)
+  {
+    setpoint = 450.0f;
+  }
+
+  if(sm_set_setpoint(setpoint) != 0U)
+  {
+    power_notify_activity(sm_get_uptime_ms());
+    buzzer_play(BUZZER_SOUND_KEY);
+  }
+}
+
 static void main_buttons(button_id_t button, button_event_t event)
 {
   if((menu_is_open() != 0U) || (tempcal_is_active() != 0U))
@@ -50,67 +74,88 @@ static void main_buttons(button_id_t button, button_event_t event)
     return;
   }
 
-  /* 短按 MENU：单按键轮换页面 */
+  /* 短按 MENU：单按键轮换页面；双击 MENU 由菜单模块处理 */
   if((button == BUTTON_MENU) && (event == BUTTON_EVENT_CLICK))
   {
     autoroll_next();
     return;
   }
 
-  /* 短按 NEXT：取消 Boost；加热关闭时恢复加热；不做页面切换 */
   if((button == BUTTON_NEXT) && (event == BUTTON_EVENT_CLICK))
   {
     /* 深度休眠的第一次 NEXT 只负责唤醒屏幕 */
     if(power_get_state() == POWER_STATE_BACKLIGHT_OFF)
     {
+      power_wake();
       return;
     }
 
-    /* 短按 PREV 的 HEATER_OFF 状态屏幕还在，NEXT 直接唤醒并恢复加热 */
-    if(power_get_state() == POWER_STATE_HEATER_OFF)
+    if(power_get_state() == POWER_STATE_REDUCED)
     {
       power_wake();
     }
 
+    /* Boost 状态下短按 NEXT 只退出 Boost，不调整温度 */
     if(onekeyboost_is_active() != 0U)
     {
       onekeyboost_cancel();
       return;
     }
 
-    if(sm_is_heater_enabled() == 0U)
-    {
-      if(sm_set_heater_enabled(1U) != 0U)
-      {
-        buzzer_play(BUZZER_SOUND_KEY);
-      }
-    }
-
+    main_adjust_setpoint(1);
     return;
   }
 
-  /* 短按 PREV：只关闭加热器，屏幕保持；长按才关屏幕 */
   if((button == BUTTON_PREV) && (event == BUTTON_EVENT_CLICK))
   {
-    if(onekeyboost_is_active() != 0U)
+    if(power_get_state() == POWER_STATE_BACKLIGHT_OFF)
     {
-      onekeyboost_cancel();
+      power_wake();
+      return;
     }
 
-    power_heater_off();
-    buzzer_play(BUZZER_SOUND_KEY);
+    if(power_get_state() == POWER_STATE_REDUCED)
+    {
+      power_wake();
+    }
+
+    /* Boost 状态下短按 PREV 不修改设定温度，避免意外退出 Boost */
+    if(onekeyboost_is_active() != 0U)
+    {
+      return;
+    }
+
+    main_adjust_setpoint(-1);
     return;
   }
 
-  /* 长按 PREV：彻底关闭加热器和屏幕 */
+  /* 长按 PREV：关闭/恢复加热器，不再关闭屏幕 */
   if((button == BUTTON_PREV) && (event == BUTTON_EVENT_LONG_PRESS))
   {
+    if((power_get_state() == POWER_STATE_BACKLIGHT_OFF) ||
+       (power_get_state() == POWER_STATE_REDUCED))
+    {
+      power_wake();
+      return;
+    }
+
     if(onekeyboost_is_active() != 0U)
     {
       onekeyboost_cancel();
     }
 
-    power_sleep_deep();
+    if((power_get_state() == POWER_STATE_HEATER_OFF) ||
+       (sm_is_heater_enabled() == 0U))
+    {
+      power_wake();
+      (void)sm_set_heater_enabled(1U);
+    }
+    else
+    {
+      power_heater_off();
+    }
+
+    buzzer_play(BUZZER_SOUND_KEY);
     return;
   }
 }

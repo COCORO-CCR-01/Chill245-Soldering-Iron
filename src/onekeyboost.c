@@ -279,13 +279,6 @@ static void onekeyboost_on_button(button_id_t button, button_event_t event)
   {
     (void)onekeyboost_start_manual();
   }
-  else if((button == BUTTON_NEXT) && (event == BUTTON_EVENT_CLICK))
-  {
-    if(onekeyboost_active != 0U)
-    {
-      onekeyboost_cancel();
-    }
-  }
 }
 
 void onekeyboost_init(void)
@@ -298,8 +291,6 @@ void onekeyboost_init(void)
   onekeyboost_drop_pending_ms = 0U;
 
   (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_LONG_PRESS,
-                                  onekeyboost_on_button);
-  (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
                                   onekeyboost_on_button);
 }
 

@@ -213,7 +213,7 @@ autoroll_set_page(AUTOROLL_PAGE_VOLTAGE);
 - **MENU 长按 2 s**：进入菜单
 - **MENU 单击**：进入子菜单 / 确认编辑
 - **PREV / NEXT**：移动选择 / 修改数值
-- **主界面短按 PREV**：只关闭加热，屏幕保持；长按 PREV：深度休眠（关加热+屏幕）；菜单内不触发
+- **主界面短按 PREV/NEXT**：按 `TEMP STEP` 减/加设定温度；Boost 状态下 NEXT 只退出 Boost，PREV 不改温；菜单内不触发
 - **MENU 长按 2 s**：返回上一级；根页面关闭菜单
 - 菜单打开时暂停页面切换，并阻止休眠计时
 - 菜单数值使用整数缩放格式化，不依赖 newlib 浮点 printf
@@ -401,8 +401,8 @@ HEATER_OFF --继续静止 5 min--> BACKLIGHT_OFF（关闭背光）
 - 任意按键 `PRESS` 都会唤醒；是否恢复加热取决于进入休眠的方式
 - 按键唤醒由 `power_init()` 自动注册到 `buttons.h`
 - 菜单 `SLEEP / POWER -> SLEEP NOW` 可立即手动休眠；也可调用 `power_sleep()`
-- 主界面短按 PREV 调用 `power_heater_off()`：只关加热，屏幕保持；按键唤醒不会自动恢复加热
-- 主界面长按 PREV 调用 `power_sleep_deep()`：关加热+背光，唤醒后加热保持关闭
+- 主界面长按 PREV 在“加热器开/关”之间切换：关闭时只关加热，屏幕保持；再次长按恢复加热
+- 深度休眠改由菜单 `SLEEP NOW` / 自动休眠触发
 - 菜单 SLEEP NOW / 自动休眠会关闭加热和背光，唤醒后恢复休眠前设定温度和加热状态
 - 休眠时 **NEXT 短按** 唤醒；NEXT 不再用按下沿唤醒，避免按下瞬间误触发。MENU/PREV 仍按下唤醒
 
@@ -513,7 +513,7 @@ buttons_register_callback(BUTTON_MENU,
 
 - [menu.c](src/menu.c:1)：菜单打开时 MENU/PREV/NEXT 的 `CLICK`，PREV/NEXT 的 `REPEAT`
 - [main.c](src/main.c:46)：非菜单界面的 MENU/PREV/NEXT 仲裁
-- [onekeyboost.c](src/onekeyboost.c:1)：NEXT 长按启动 Boost、NEXT 短按取消 Boost
+- [onekeyboost.c](src/onekeyboost.c:1)：NEXT 长按启动 Boost；NEXT 短按由主按键仲裁处理
 - [powermanagement.c](src/powermanagement.c:1)：三个按键的 `PRESS` 唤醒、NEXT 短按休眠唤醒
 - autoroll 不再注册按键回调；没有定时自动翻页
 
@@ -522,11 +522,12 @@ buttons_register_callback(BUTTON_MENU,
 | 操作 | 功能 |
 |---|---|
 | MENU 短按 | 单按键轮换页面 |
+| MENU 双击 | 直接打开 SETPOINT 快速编辑，退出后回主界面 |
 | MENU 长按 2 s | 进入菜单 |
 | NEXT 长按 | 启动 Boost |
-| NEXT 短按 | 取消 Boost；加热关闭时恢复加热；深度休眠第一次只唤醒屏幕；不翻页 |
-| PREV 短按 | 只关闭加热器，屏幕保持；进入 HEATER_OFF 状态 |
-| PREV 长按 | 深度休眠：关闭加热器和屏幕，唤醒后加热保持关闭 |
+| NEXT 短按 | Boost 状态下只退出 Boost，不调温；非 Boost 状态增加一个 `TEMP STEP` |
+| PREV 短按 | 减少一个 `TEMP STEP`；Boost 状态下不动作 |
+| PREV 长按 | 关闭/恢复加热器，屏幕保持；不再关闭屏幕 |
 
 菜单打开时，PREV/NEXT 仍用于菜单导航和数值调整。
 
@@ -635,7 +636,7 @@ SYSTEM
 - `TEMP STEP` / `TIME STEP` 自己始终按 1 调整
 - **双击 MENU**：直接打开 `TEMPERATURE -> SETPOINT` 编辑，NEXT/PREV 按 `TEMP STEP` 调整，MENU 确认并退出
 - 电压、PID、ms 级时间等其它项保留原来的物理步进
-- 长按 NEXT 启动 Boost；短按 NEXT 取消 Boost；非菜单界面 PREV/NEXT 不再翻页
+- 长按 NEXT 启动 Boost；Boost 状态下短按 NEXT 退出 Boost；非 Boost 状态短按 PREV/NEXT 调整设定温度
 - 加热关闭（DISABLED/HEATER_OFF）时短按 NEXT 恢复加热；深度休眠的第一次 NEXT 只唤醒屏幕，第二次恢复加热
 
 ## 加热器输出

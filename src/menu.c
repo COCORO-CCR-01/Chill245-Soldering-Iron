@@ -430,6 +430,8 @@ static void menu_back(void)
   {
     menu_quick_edit = 0U;
     menu_close();
+    autoroll_set_page(AUTOROLL_PAGE_MAIN);
+    autoroll_request_redraw();
     return;
   }
 
@@ -527,6 +529,8 @@ static void menu_confirm_edit(void)
   {
     menu_quick_edit = 0U;
     menu_close();
+    autoroll_set_page(AUTOROLL_PAGE_MAIN);
+    autoroll_request_redraw();
     return;
   }
 
