@@ -1,4 +1,4 @@
-# Chill245 烙铁控制器（PlatformIO）
+# Chill245 烙铁控制器
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
