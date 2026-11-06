@@ -13,9 +13,9 @@ static uint16_t wallpaper_dim(uint16_t color)
   uint16_t g = (uint16_t)((color >> 5) & 0x3FU);
   uint16_t b = (uint16_t)(color & 0x1FU);
 
-  r = (uint16_t)((r * 10U) / 16U);
-  g = (uint16_t)((g * 10U) / 16U);
-  b = (uint16_t)((b * 10U) / 16U);
+  r = (uint16_t)((r * 8U) / 16U);
+  g = (uint16_t)((g * 8U) / 16U);
+  b = (uint16_t)((b * 8U) / 16U);
 
   return (uint16_t)((r << 11) | (g << 5) | b);
 }

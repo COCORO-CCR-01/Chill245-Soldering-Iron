@@ -949,12 +949,23 @@ void display_draw_char_transparent(uint16_t x, uint16_t y, char ch,
   }
 }
 
+uint16_t display_contrast_shadow(uint16_t fg)
+{
+  uint16_t r = (uint16_t)((fg >> 11) & 0x1FU);
+  uint16_t g = (uint16_t)((fg >> 5) & 0x3FU);
+  uint16_t b = (uint16_t)(fg & 0x1FU);
+
+  /* 亮字配近黑阴影，暗字配近白阴影；避免亮色主题把纯黑/纯白再次反转 */
+  return (((r * 2U) + g + (b * 2U)) > 90U) ? 0x0001U : 0xFFFEU;
+}
+
 void display_draw_string_transparent(uint16_t x, uint16_t y,
                                      const char *text,
                                      uint16_t fg, uint8_t scale)
 {
   uint16_t shadow_x;
   uint16_t shadow_y;
+  uint16_t shadow;
 
   if((display_initialized == 0U) || (text == NULL))
   {
@@ -972,10 +983,16 @@ void display_draw_string_transparent(uint16_t x, uint16_t y,
 
   shadow_x = (uint16_t)(x + 1U);
   shadow_y = (uint16_t)(y + 1U);
+  shadow = display_contrast_shadow(fg);
 
   while(*text != '\0')
   {
-    display_draw_char_transparent(shadow_x, shadow_y, *text, 0x0001U, scale);
+    display_draw_char_transparent(shadow_x, shadow_y, *text, shadow, scale);
+    if((x > 0U) && (y > 0U))
+    {
+      display_draw_char_transparent((uint16_t)(x - 1U),
+                                    (uint16_t)(y - 1U), *text, shadow, scale);
+    }
     display_draw_char_transparent(x, y, *text, fg, scale);
     x = (uint16_t)(x + (4U * scale));
     shadow_x = (uint16_t)(shadow_x + (4U * scale));

@@ -22,7 +22,7 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x0008U)
+#define EEPROM_FORMAT_VERSION           (0x0009U)
 
 /**
   * @brief  所有掉电保存参数

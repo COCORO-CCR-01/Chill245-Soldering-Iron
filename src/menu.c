@@ -16,6 +16,7 @@
 #include "menu.h"
 #include "fmt.h"
 #include "display.h"
+#include "appcolors.h"
 #include "statemachine.h"
 #include "pid.h"
 #include "temp.h"
@@ -40,17 +41,17 @@
 #define MENU_ROW_H                      (11U)
 #define MENU_TIMEOUT_MIN_S              (5.0f)
 
-#define UI_BLACK                        (0x0000U)
-#define UI_WHITE                        (0xFFFFU)
-#define UI_GRAY                         (0x9CF3U)
-#define UI_DARK                         (0x18C3U)
-#define UI_PANEL                        (0x10A2U)
-#define UI_HEADER                       (0x0861U)
-#define UI_ACCENT                       (0x18E3U)
-#define UI_CYAN                         (0x05FFU)
-#define UI_ORANGE                       (0xFC9FU)
+#define UI_BLACK                        appcolors_surface()
+#define UI_WHITE                        appcolors_get(APP_COLOR_QUATERNARY)
+#define UI_GRAY                         appcolors_get(APP_COLOR_TERTIARY)
+#define UI_DARK                         appcolors_surface()
+#define UI_PANEL                        appcolors_surface()
+#define UI_HEADER                       appcolors_surface()
+#define UI_ACCENT                       appcolors_get(APP_COLOR_PRIMARY)
+#define UI_CYAN                         appcolors_get(APP_COLOR_SECONDARY)
+#define UI_ORANGE                       appcolors_get(APP_COLOR_PRIMARY)
 #define UI_RED                          (0xF800U)
-#define UI_VALUE                        (0xFC9FU)
+#define UI_VALUE                        appcolors_get(APP_COLOR_QUATERNARY)
 
 typedef enum
 {

@@ -217,6 +217,8 @@ void display_draw_string_transparent(uint16_t x, uint16_t y,
                                      const char *text,
                                      uint16_t fg, uint8_t scale);
 
+uint16_t display_contrast_shadow(uint16_t fg);
+
 /**
   * @brief  计算字符串像素宽度
   * @param  text: 字符串

@@ -741,7 +741,7 @@ static void maindash_alt_big_digit(uint16_t x, uint16_t y, uint8_t digit)
       if(on != 0U)
       {
         /* 只画前景，壁纸保留在字形内部，形成透明大字效果 */
-        display_draw_pixel((uint16_t)(x + col), (uint16_t)(y + row), UI_PINK);
+        display_draw_pixel((uint16_t)(x + col), (uint16_t)(y + row), UI_WHITE);
       }
     }
   }
@@ -839,7 +839,7 @@ static void maindash_alt_draw(const sm_status_t *status, uint32_t now_ms)
   }
   else if((show_set == 0U) && (status->temp_valid == 0U))
   {
-    display_draw_string_transparent(56U, 23U, "---", UI_PINK, 4U);
+    display_draw_string_transparent(56U, 23U, "---", UI_WHITE, 4U);
   }
   else
   {
@@ -954,7 +954,7 @@ static void maindash_alt_draw_temp(int shown_c, uint8_t valid)
 
   if(valid == 0U)
   {
-    display_draw_string_transparent(56U, 23U, "---", UI_PINK, 4U);
+    display_draw_string_transparent(56U, 23U, "---", UI_WHITE, 4U);
     return;
   }
 
@@ -1009,14 +1009,14 @@ static void maindash_alt_partial(const sm_status_t *status, uint32_t now_ms,
     }
     else if((show_set == 0U) && (status->temp_valid == 0U))
     {
-      display_draw_string_transparent(56U, 23U, "---", UI_PINK, 4U);
+      display_draw_string_transparent(56U, 23U, "---", UI_WHITE, 4U);
     }
     else
     {
       maindash_alt_draw_temp(shown_c, 1U);
     }
   }
-  else if((mask & ALT_DIRTY_TEMP) != 0U)
+  else if(((mask & ALT_DIRTY_TEMP) != 0U) && (disabled == 0U))
   {
     wallpaper_blit(9U, 11U, 138U, 56U);
     maindash_alt_draw_temp(shown_c, (uint8_t)((show_set != 0U) || (status->temp_valid != 0U)));
@@ -1120,8 +1120,9 @@ static void maindash_alt_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= ALT_DIRTY_TOP | ALT_DIRTY_TEMP;
   }
-  if((shown_c != alt_last_shown) ||
-     (status->temp_valid != alt_last_valid))
+  if((disabled == 0U) &&
+     ((shown_c != alt_last_shown) ||
+      (status->temp_valid != alt_last_valid)))
   {
     mask |= ALT_DIRTY_TEMP;
   }
@@ -1181,7 +1182,7 @@ static void maindash_classic_temp_digit(uint16_t x, uint16_t y, uint8_t digit)
                       (7U - (bit & 7U))) & 1U);
       if(on != 0U)
       {
-        display_draw_pixel((uint16_t)(x + col), (uint16_t)(y + row), UI_PINK);
+        display_draw_pixel((uint16_t)(x + col), (uint16_t)(y + row), UI_WHITE);
       }
     }
   }
@@ -1197,7 +1198,14 @@ static void maindash_classic_top_text(uint16_t x, uint16_t y,
   {
     fg = (x < fill_width) ? UI_BLACK : color;
     display_draw_char_transparent((uint16_t)(x + 1U),
-                                  (uint16_t)(y + 1U), *text, 0x0001U, scale);
+                                  (uint16_t)(y + 1U), *text,
+                                  display_contrast_shadow(fg), scale);
+    if((x > 0U) && (y > 0U))
+    {
+      display_draw_char_transparent((uint16_t)(x - 1U),
+                                    (uint16_t)(y - 1U), *text,
+                                    display_contrast_shadow(fg), scale);
+    }
     display_draw_char_transparent(x, y, *text, fg, scale);
     x = (uint16_t)(x + (4U * scale));
     text++;
@@ -1270,7 +1278,7 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
 
   if((show_set == 0U) && (status->temp_valid == 0U))
   {
-    display_draw_string_transparent(13U, 25U, "---", UI_PINK, 4U);
+    display_draw_string_transparent(13U, 25U, "---", UI_WHITE, 4U);
   }
   else
   {
@@ -1289,7 +1297,7 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
     }
 
     maindash_classic_temp_digit(44U, 18U, (uint8_t)units);
-    display_draw_string_transparent(66U, 28U, "C", UI_PINK, 2U);
+    display_draw_string_transparent(66U, 28U, "C", UI_WHITE, 2U);
   }
 
   display_fill_rect(74U, 13U, 1U, 50U, UI_BLUE);
@@ -1436,7 +1444,7 @@ static void maindash_classic_temp_draw(const sm_status_t *status, uint32_t now_m
 
   if((show_set == 0U) && (status->temp_valid == 0U))
   {
-    display_draw_string_transparent(13U, 25U, "---", UI_PINK, 4U);
+    display_draw_string_transparent(13U, 25U, "---", UI_WHITE, 4U);
     return;
   }
 
@@ -1453,7 +1461,7 @@ static void maindash_classic_temp_draw(const sm_status_t *status, uint32_t now_m
     maindash_classic_temp_digit(24U, 18U, (uint8_t)tens);
   }
   maindash_classic_temp_digit(44U, 18U, (uint8_t)units);
-  display_draw_string_transparent(66U, 28U, "C", UI_PINK, 2U);
+  display_draw_string_transparent(66U, 28U, "C", UI_WHITE, 2U);
 }
 
 static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_ms)

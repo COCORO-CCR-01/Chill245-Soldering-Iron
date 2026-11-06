@@ -575,7 +575,7 @@ function hsvToRgb(h, s, v) {
   return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
 }
 
-function deriveMonet(pal) {
+function deriveMonet(pal, idx) {
   let best = pal[0], bestScore = -1;
   for (const c of pal) {
     const hsv = rgbToHsv(c);
@@ -584,15 +584,15 @@ function deriveMonet(pal) {
   }
   const base = rgbToHsv(best);
   const hue = base.s < 0.12 ? 320 : base.h;
-  // 五级色：主/二/三/四/五，最后一级刻意压暗作为面板底色
-  const specs = [
-    [0,   0.72, 0.94],
-    [32,  0.62, 0.82],
-    [-32, 0.58, 0.74],
-    [62,  0.42, 0.92],
-    [-62, 0.55, 0.24]
+  // 深色 UI 固定：高亮强调 + 近白正文 + 深色 surface。
+  // 壁纸本身在设备端压暗，避免亮壁纸把文字对比度拉低，也避免自动把深色菜单变浅。
+  return [
+    hsvToRgb(hue, 0.72, 0.96),
+    hsvToRgb(hue + 34, 0.46, 0.90),
+    hsvToRgb(hue - 34, 0.38, 0.82),
+    [245, 245, 248],
+    hsvToRgb(hue, 0.40, 0.10)
   ];
-  return specs.map(([dh, s, v]) => hsvToRgb(hue + dh, s, v));
 }
 
 function renderColorInputs() {
@@ -651,7 +651,7 @@ function update() {
   paletteRGB = q.pal;
   indices = q.idx;
   if (document.querySelector('input[name=colorMode]:checked').value === "monet") {
-    appColors = deriveMonet(paletteRGB);
+    appColors = deriveMonet(paletteRGB, indices);
   }
   renderColorInputs();
   const packed = packNibbles(indices);
@@ -812,7 +812,7 @@ document.getElementById("targetMode").addEventListener("change", () => {
 document.querySelectorAll('input[name=colorMode]').forEach(el => {
   el.addEventListener("change", () => {
     if (el.value === "monet" && paletteRGB) {
-      appColors = deriveMonet(paletteRGB);
+      appColors = deriveMonet(paletteRGB, indices);
     }
     renderColorInputs();
     if (image) update();

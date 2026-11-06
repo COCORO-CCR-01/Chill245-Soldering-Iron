@@ -182,7 +182,7 @@ HEATING        SLEEP ● 300s
 - 没有有效图片时 `bootlogo_is_valid()` / `wallpaper_is_available()` 返回 0，开机不显示，菜单延时设置也不会生效。
 - 菜单 `DISPLAY / UI -> BOOT LOGO` 设置开机显示秒数，范围 0~10 s，默认 0；设置值不会再被图片校验/参数保存清零。
 - 开机显示在 `eeprom_apply()` 之后、恢复加热之前，显示期间不加热。
-- [wallpaper.c](src/wallpaper.c) 把同一张图片以 **10/16 亮度**绘制到 maindash，避免壁纸压过前景。
+- [wallpaper.c](src/wallpaper.c) 把同一张图片以 **8/16 亮度**绘制到 maindash，避免壁纸压过前景。
 - [appcolors.c](src/appcolors.c) 提供五级主题色：
   - `primary`：温度、进度、主要强调
   - `secondary`：标签、次级信息
@@ -192,6 +192,11 @@ HEATING        SLEEP ● 300s
 - 新版和旧版 maindash 都使用 appcolors；所有信息文字改为透明前景 + 1px 阴影，壁纸从字形内部和背景透出。
 - 只有进度条和分隔线保留实色；信息行不再使用整块不透明面板。
 - maindash 改为脏刷新：温度、SET/NOW、右侧两行、底部状态和功率条分别只重绘自己的矩形；壁纸变化/翻页时才整帧重绘。
+- DISABLED 闪烁期间不再同时触发温度重绘，避免 DISABLED 和温度轮流出现。
+- appcolors 已全局应用到 maindash、菜单、曲线页、页面指示、温度校准页和 HMS 故障页。
+- 上位机 Monet 固定使用深色 UI：高亮强调 + 近白正文 + 深色 quinary surface，不再因亮壁纸自动把深色模式变浅。
+- 壁纸压暗到 8/16；温度数字改为近白色，正文使用近白 + 双向 1px 阴影，提高壁纸上的对比度。
+- 透明文字根据前景亮度自动选择近黑或近白阴影。
 - 壁纸解码到 RAM 的 4bpp 缓存（6400 B），脏刷新用 `wallpaper_blit()` 恢复局部背景，不再每 250 ms 全屏重画。
 - 壁纸/启动图使用 **raw 像素流**，绕过暗/亮主题颜色映射，避免图片颜色被主题改写。
 - 面板存在红/蓝通道互换：`DISPLAY_SWAP_RB` 默认为 **1**，在 display.c 最底层把所有 RGB565 输出做 R/B 交换；MADCTL 仍保持 `0xA0`，不退回旧方向配置。
@@ -235,7 +240,7 @@ Device -> 'K'（失败返回 'E'）
 
 `data_len` 为实际 RLE 字节数，最后一包补 0 到 128 B；CRC32 只覆盖实际数据。
 
-壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **8**。
+壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **9**。
 
 ### 新版全屏主界面
 

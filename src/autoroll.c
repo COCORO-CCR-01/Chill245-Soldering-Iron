@@ -17,6 +17,7 @@
 #include "maindash.h"
 #include "graph.h"
 #include "display.h"
+#include "appcolors.h"
 #include "statemachine.h"
 #include "menu.h"
 #include "onekeyboost.h"
@@ -28,9 +29,9 @@
 #define AUTOROLL_MAX_MS                 (60000U)
 #define AUTOROLL_GRAPH_REDRAW_MS        (250U)
 
-#define UI_BLACK                        (0x0000U)
-#define UI_CYAN                         (0xFC9FU)
-#define UI_DARK                         (0x18C3U)
+#define UI_BLACK                        appcolors_surface()
+#define UI_CYAN                         appcolors_get(APP_COLOR_PRIMARY)
+#define UI_DARK                         appcolors_get(APP_COLOR_QUINARY)
 
 static autoroll_page_t autoroll_page;
 static uint32_t autoroll_interval_ms;

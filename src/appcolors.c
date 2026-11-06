@@ -11,19 +11,6 @@ static const uint16_t appcolors_default[APP_COLOR_COUNT] =
   0x0861U   /* quinary: dark blue surface */
 };
 
-static uint16_t appcolors_darken(uint16_t color)
-{
-  uint16_t r = (uint16_t)((color >> 11) & 0x1FU);
-  uint16_t g = (uint16_t)((color >> 5) & 0x3FU);
-  uint16_t b = (uint16_t)(color & 0x1FU);
-
-  r = (uint16_t)((r * 7U) / 16U);
-  g = (uint16_t)((g * 7U) / 16U);
-  b = (uint16_t)((b * 7U) / 16U);
-
-  return (uint16_t)((r << 11) | (g << 5) | b);
-}
-
 void appcolors_init(void)
 {
   uint8_t i;
@@ -71,5 +58,6 @@ uint16_t appcolors_get(app_color_slot_t slot)
 
 uint16_t appcolors_surface(void)
 {
-  return appcolors_darken(app_colors[APP_COLOR_QUINARY]);
+  /* Host Monet chooses a dark or light quinary together with contrasting text. */
+  return app_colors[APP_COLOR_QUINARY];
 }

@@ -21,20 +21,21 @@
 #include "eeprom.h"
 #include "buttons.h"
 #include "display.h"
+#include "appcolors.h"
 #include "ui_icons.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
-#define TEMPCAL_BLACK       (0x0000U)
-#define TEMPCAL_WHITE       (0xFFFFU)
+#define TEMPCAL_BLACK       appcolors_surface()
+#define TEMPCAL_WHITE       appcolors_get(APP_COLOR_QUATERNARY)
 #define TEMPCAL_RED         (0xF800U)
-#define TEMPCAL_GREEN       (0x07E0U)
-#define TEMPCAL_YELLOW      (0xFFE0U)
-#define TEMPCAL_GRAY        (0x8410U)
-#define TEMPCAL_DARK        (0x2104U)
-#define TEMPCAL_BAR         (0x0010U)
-#define TEMPCAL_CYAN        (0x07FFU)
+#define TEMPCAL_GREEN       appcolors_get(APP_COLOR_SECONDARY)
+#define TEMPCAL_YELLOW      appcolors_get(APP_COLOR_PRIMARY)
+#define TEMPCAL_GRAY        appcolors_get(APP_COLOR_TERTIARY)
+#define TEMPCAL_DARK        appcolors_surface()
+#define TEMPCAL_BAR         appcolors_surface()
+#define TEMPCAL_CYAN        appcolors_get(APP_COLOR_SECONDARY)
 
 #define TEMPCAL_POINTS              (7U)
 #define TEMPCAL_STABLE_MS           (3000U)

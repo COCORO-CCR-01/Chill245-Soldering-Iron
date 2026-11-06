@@ -11,6 +11,7 @@
 #include "graph.h"
 #include "fmt.h"
 #include "display.h"
+#include "appcolors.h"
 #include "statemachine.h"
 #include "powermanagement.h"
 #include <stdio.h>
@@ -23,14 +24,14 @@
 #define GW                              (GX1 - GX0)
 #define GH                              (GY1 - GY0)
 
-#define UI_BLACK                        (0x0000U)
-#define UI_WHITE                        (0xFFFFU)
-#define UI_GRAY                         (0x8410U)
-#define UI_DARK                         (0x4208U)
+#define UI_BLACK                        appcolors_surface()
+#define UI_WHITE                        appcolors_get(APP_COLOR_QUATERNARY)
+#define UI_GRAY                         appcolors_get(APP_COLOR_TERTIARY)
+#define UI_DARK                         appcolors_surface()
 #define UI_RED                          (0xF800U)
-#define UI_GREEN                        (0x07E0U)
-#define UI_CYAN                         (0x07FFU)
-#define UI_YELLOW                       (0xFFE0U)
+#define UI_GREEN                        appcolors_get(APP_COLOR_SECONDARY)
+#define UI_CYAN                         appcolors_get(APP_COLOR_SECONDARY)
+#define UI_YELLOW                       appcolors_get(APP_COLOR_PRIMARY)
 
 static int16_t graph_temp_x10[GRAPH_POINTS];
 static int16_t graph_power_pct[GRAPH_POINTS];

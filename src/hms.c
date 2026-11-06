@@ -10,19 +10,20 @@
 
 #include "hms.h"
 #include "display.h"
+#include "appcolors.h"
 #include "ui_icons.h"
 #include "statemachine.h"
 #include "powermanagement.h"
 #include "buzzer.h"
 #include <stddef.h>
 
-#define HMS_BLACK       (0x0000U)
-#define HMS_WHITE       (0xFFFFU)
+#define HMS_BLACK       appcolors_surface()
+#define HMS_WHITE       appcolors_get(APP_COLOR_QUATERNARY)
 #define HMS_RED         (0xF800U)
-#define HMS_GREEN       (0x07E0U)
-#define HMS_YELLOW      (0xFFE0U)
-#define HMS_GRAY        (0x8410U)
-#define HMS_DARK        (0x2104U)
+#define HMS_GREEN       appcolors_get(APP_COLOR_SECONDARY)
+#define HMS_YELLOW      appcolors_get(APP_COLOR_PRIMARY)
+#define HMS_GRAY        appcolors_get(APP_COLOR_TERTIARY)
+#define HMS_DARK        appcolors_surface()
 #define HMS_VIEW_MS     (3000U)
 
 typedef enum
