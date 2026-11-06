@@ -261,6 +261,7 @@ void eeprom_capture_current(void)
   float time_step_s = g_eeprom_params.time_step_s;
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
   uint8_t ui_light = g_eeprom_params.ui_light;
+  float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
 
   memset(&g_eeprom_params, 0, sizeof(g_eeprom_params));
 
@@ -272,6 +273,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.time_step_s = time_step_s;
   g_eeprom_params.maindash_alt = maindash_alt;
   g_eeprom_params.ui_light = ui_light;
+  g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
 
   g_eeprom_params.setpoint_c = sm_get_setpoint();
   g_eeprom_params.pid_mode = (uint8_t)sm_get_pid_mode();
