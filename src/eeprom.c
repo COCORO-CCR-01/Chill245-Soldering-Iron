@@ -25,6 +25,8 @@
 #include "hms.h"
 #include "heater.h"
 #include "display.h"
+#include "bootlogo.h"
+#include "appcolors.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -219,6 +221,8 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
   if((params->stationary_s < 1.0f) ||
      (params->sleep_power_pct < 0.0f) ||
      (params->sleep_power_pct > 100.0f) ||
+     (params->bootlogo_delay_s < 0.0f) ||
+     (params->bootlogo_delay_s > 10.0f) ||
      (params->reduced_off_s < 1.0f) ||
      (params->backlight_off_s < 1.0f) ||
      (params->autoroll_s < 1.0f))
@@ -288,6 +292,7 @@ void eeprom_capture_current(void)
     (float)power_get_stationary_timeout_ms() / 1000.0f;
   g_eeprom_params.sleep_power_pct =
     (float)power_get_low_power_threshold();
+  appcolors_get_all(g_eeprom_params.app_colors);
   g_eeprom_params.reduced_temp_c = power_get_reduced_temperature();
   g_eeprom_params.reduced_off_s =
     (float)power_get_reduced_off_timeout_ms() / 1000.0f;
@@ -334,6 +339,7 @@ void eeprom_apply(void)
   sm_get_status(&status);
 
   display_set_light_theme(g_eeprom_params.ui_light);
+  appcolors_set(g_eeprom_params.app_colors);
 
   /* 整定过程中不要改设定温度/PID/标定，避免破坏整定 */
   if(status.autotune_state != PID_AUTOTUNE_RUNNING)
@@ -445,6 +451,12 @@ void eeprom_init(void)
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
     g_eeprom_params.sleep_power_pct = 13.0f;
+    g_eeprom_params.bootlogo_delay_s = 0.0f;
+    g_eeprom_params.app_colors[0] = 0xFC9FU;
+    g_eeprom_params.app_colors[1] = 0x05FFU;
+    g_eeprom_params.app_colors[2] = 0x9CF3U;
+    g_eeprom_params.app_colors[3] = 0xFFFFU;
+    g_eeprom_params.app_colors[4] = 0x0861U;
 
     if((newest != NULL) && (eeprom_params_sane(&newest->params) == 0U))
     {

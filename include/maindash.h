@@ -23,6 +23,11 @@ void maindash_init(void);
 void maindash_draw(const sm_status_t *status);
 
 /**
+  * @brief  请求下一次 maindash 更新整帧重绘（壁纸/主题变化后调用）
+  */
+void maindash_invalidate(void);
+
+/**
   * @brief  通知新主界面刚进行了快速设定温度调整
   * @param  none
   * @retval none

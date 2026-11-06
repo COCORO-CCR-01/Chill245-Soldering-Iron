@@ -102,6 +102,11 @@ void display_begin_pixel_stream(void);
 void display_write_pixel_stream(const uint16_t *colors, uint32_t count);
 
 /**
+  * @brief  像素流，绕过暗/亮主题颜色映射（壁纸、启动图使用）
+  */
+void display_write_pixel_stream_raw(const uint16_t *colors, uint32_t count);
+
+/**
   * @brief  结束连续像素流并释放 CS
   * @retval none
   */
@@ -202,6 +207,15 @@ void display_draw_char(uint16_t x, uint16_t y, char ch,
   */
 void display_draw_string(uint16_t x, uint16_t y, const char *text,
                          uint16_t fg, uint16_t bg, uint8_t scale);
+
+/**
+  * @brief  透明字符/字符串，只写前景像素并带 1px 阴影
+  */
+void display_draw_char_transparent(uint16_t x, uint16_t y, char ch,
+                                   uint16_t fg, uint8_t scale);
+void display_draw_string_transparent(uint16_t x, uint16_t y,
+                                     const char *text,
+                                     uint16_t fg, uint8_t scale);
 
 /**
   * @brief  计算字符串像素宽度

@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chill245 Boot Logo / Wallpaper Uploader</title>
+<style>
+  :root {
+    --bg: #090b10;
+    --panel: #11151d;
+    --panel2: #171c26;
+    --border: #2a3242;
+    --text: #e7edf5;
+    --muted: #8d9aab;
+    --pink: #fc9fbf;
+    --pink2: #ff6f9f;
+    --blue: #58a6ff;
+    --ok: #42d392;
+    --warn: #ffb454;
+    --err: #ff5f6d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background:
+      radial-gradient(1000px 500px at 15% -10%, #231627 0%, transparent 60%),
+      radial-gradient(900px 500px at 90% 0%, #102033 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; align-items: end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 22px; }
+  h1 { margin: 0; font-size: 25px; letter-spacing: .5px; }
+  h1 span { color: var(--pink); }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 7px; line-height: 1.7; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr); gap: 18px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,.025), transparent 55%), var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  .card h2 { margin: 0 0 12px; font-size: 14px; color: #cdd8e6; font-weight: 600; letter-spacing: .3px; }
+  .canvas-wrap {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    background:
+      linear-gradient(45deg, #151a23 25%, transparent 25%, transparent 75%, #151a23 75%),
+      linear-gradient(45deg, #151a23 25%, #0d1118 25%, #0d1118 75%, #151a23 75%);
+    background-size: 22px 22px;
+    background-position: 0 0, 11px 11px;
+    border: 1px solid #222b3a;
+    min-height: 360px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #editor { display: block; max-width: 100%; height: auto; touch-action: none; cursor: crosshair; }
+  .empty {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); pointer-events: none; text-align: center; padding: 30px;
+  }
+  .empty b { color: #c9d4e3; font-size: 15px; }
+  .empty small { max-width: 420px; line-height: 1.7; }
+  .drop {
+    border: 1px dashed #3a4557; border-radius: 10px; padding: 9px 14px; color: #b8c6d8; background: rgba(255,255,255,.02);
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  label.btn, button {
+    appearance: none; border: 1px solid #334055; background: #1a2230; color: var(--text);
+    padding: 9px 14px; border-radius: 9px; font-size: 13px; cursor: pointer; transition: .15s;
+    font-family: inherit; white-space: nowrap;
+  }
+  label.btn:hover, button:hover:not(:disabled) { border-color: #52627c; background: #202b3d; transform: translateY(-1px); }
+  button.primary { background: linear-gradient(135deg, #ff7aa7, #d94e86); border-color: #ff8db4; color: #180810; font-weight: 700; }
+  button.primary:hover:not(:disabled) { background: linear-gradient(135deg, #ff92b8, #e45c95); }
+  button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+  button.ghost { background: transparent; }
+  input[type=file] { display: none; }
+  .status { margin-top: 12px; font-size: 12.5px; color: var(--muted); min-height: 38px; line-height: 1.6; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+  .status.warn { color: var(--warn); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: #131924; color: var(--muted); font-size: 11.5px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #5b6677; box-shadow: 0 0 0 3px rgba(91,102,119,.12); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(66,211,146,.15); }
+  .preview-shell { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+  #preview {
+    width: 240px; height: 120px; image-rendering: pixelated; border-radius: 8px;
+    border: 1px solid #2c3748; background: #000; flex: 0 0 auto;
+  }
+  .meta { font-size: 12px; color: var(--muted); line-height: 1.8; }
+  .meta b { color: #dbe6f3; font-weight: 600; }
+  .divider { height: 1px; background: var(--border); margin: 14px 0; }
+  .tips { font-size: 12px; color: var(--muted); line-height: 1.8; }
+  .tips code { color: #c7d5e6; background: #0d121a; border: 1px solid #222b3a; padding: 1px 5px; border-radius: 5px; }
+  .swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 8px; }
+  .swatches div { aspect-ratio: 1; border-radius: 4px; border: 1px solid rgba(255,255,255,.09); }
+  .mode-row { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 10px; align-items: center; margin-bottom: 10px; }
+  select { background: #131924; color: var(--text); border: 1px solid #334055; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 12.5px; }
+  .color-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .color-item { display: flex; align-items: center; gap: 8px; background: #0f141c; border: 1px solid #242e3d; border-radius: 8px; padding: 6px 8px; font-size: 11.5px; color: var(--muted); }
+  .color-item input[type=color] { width: 26px; height: 26px; border: 0; padding: 0; background: none; border-radius: 6px; overflow: hidden; cursor: pointer; }
+  .color-item b { color: #dbe6f3; font-weight: 500; font-size: 11px; display: block; }
+  .steps { counter-reset: step; display: grid; gap: 8px; }
+  .steps div { position: relative; padding-left: 28px; font-size: 12.5px; color: var(--muted); line-height: 1.65; }
+  .steps div::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 1px; width: 19px; height: 19px; border-radius: 50%;
+    display: grid; place-items: center; background: #1b2331; border: 1px solid #334055; color: #c9d5e4; font-size: 10.5px;
+  }
+  .footer { color: #5f6b7c; font-size: 11.5px; text-align: center; margin-top: 26px; line-height: 1.7; }
+  a { color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Chill245 <span>Boot Logo / Wallpaper</span></h1>
+      <div class="sub">任意裁剪 2:1 → 160×80 → 16 色 → RLE → 串口写入<br>壁纸模式额外发送 5 级主题色 · USART1 PA9/PA10 · 115200 8N1</div>
+    </div>
+    <div class="badge"><span class="dot" id="serialDot"></span><span id="serialText">串口未连接</span></div>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>1 · 选择图片并裁剪</h2>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="editor" width="760" height="390"></canvas>
+        <div class="empty" id="empty">
+          <div class="drop">拖入图片，或点击下方按钮</div>
+          <b>任意位置 / 任意大小，自动保持 2:1</b>
+          <small>拖动框移动，拖动右下角或滚轮缩放。导出时严格裁成 2:1，再缩放到 160×80。</small>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="btn">选择图片<input id="file" type="file" accept="image/*"></label>
+        <button class="ghost" id="resetCrop">重置裁剪</button>
+        <label class="btn" style="margin-left:auto">重新上传<input id="file2" type="file" accept="image/*"></label>
+      </div>
+      <div class="preview-shell">
+        <canvas id="preview" width="160" height="80"></canvas>
+        <div class="meta">
+          裁剪：<b id="cropInfo">—</b><br>
+          调色板：<b>16 色</b> · RLE：<b id="rleInfo">—</b><br>
+          <span style="font-size:11px">预览为实际屏幕像素，放大 1.5× 显示</span>
+        </div>
+      </div>
+      <div class="swatches" id="swatches"></div>
+    </section>
+
+    <aside class="card">
+      <h2>2 · 写入设备</h2>
+      <div class="mode-row">
+        <span style="font-size:12px;color:var(--muted)">写入模式</span>
+        <select id="targetMode">
+          <option value="wallpaper" selected>壁纸 + 主题色</option>
+          <option value="logo">仅启动 Logo</option>
+        </select>
+      </div>
+      <div id="colorBox">
+        <div class="row" style="margin-bottom:8px">
+          <label class="badge"><input type="radio" name="colorMode" value="monet" checked style="accent-color:#ff7aa7"> Monet 取色</label>
+          <label class="badge"><input type="radio" name="colorMode" value="custom" style="accent-color:#ff7aa7"> 自定义</label>
+        </div>
+        <div class="color-grid" id="colorGrid"></div>
+      </div>
+      <div class="divider"></div>
+      <div class="steps">
+        <div>USB-TTL 接 <code>PA9</code>、<code>PA10</code>、<code>GND</code>。</div>
+        <div>连接串口，选择 115200 端口。</div>
+        <div>点击上传，设备会擦除 8 KB 图片区并写入。</div>
+        <div>壁纸会立即用于 maindash；启动 Logo 显示秒数在 <code>DISPLAY / UI → BOOT LOGO</code> 设置。</div>
+      </div>
+      <div class="divider"></div>
+      <div class="row">
+        <button id="connect">连接串口</button>
+        <button id="disconnect" class="ghost" disabled>断开</button>
+      </div>
+      <div class="row">
+        <button id="upload" class="primary" style="width:100%" disabled>上传壁纸</button>
+      </div>
+      <div class="row">
+        <button id="download" class="ghost" style="width:100%" disabled>下载 .rle 文件</button>
+      </div>
+      <div id="status" class="status">等待图片。</div>
+      <div class="divider"></div>
+      <div class="tips">
+        <b>容量</b><br>
+        160×80 16 色原始 6400 B；RLE 上限 <code>8064 B</code>，设备图片区 8 KB。<br><br>
+        <b>壁纸与主题</b><br>
+        壁纸模式从图像取 5 级色：主要 / 二级 / 三级 / 四级 / 五级。默认 Monet 取色保证前景对比；也可逐级自定义。<br><br>
+        <b>说明</b><br>
+        壁纸与启动 Logo 共用同一张 8 KB 图片。上传过程中加热会暂时关闭，完成后自动恢复。
+      </div>
+    </aside>
+  </div>
+
+  <div class="footer">
+    Web Serial 需要 Chrome / Edge，且页面运行于 <code>https://</code> 或 <code>localhost</code>。<br>
+    Chill245 · 160×80 ST7735S · 16-color PackBits RLE
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const MAX_RLE = 8064;
+const OUT_W = 160, OUT_H = 80;
+
+const editor = document.getElementById("editor");
+const ectx = editor.getContext("2d");
+const preview = document.getElementById("preview");
+const pctx = preview.getContext("2d");
+const empty = document.getElementById("empty");
+const statusEl = document.getElementById("status");
+const cropInfo = document.getElementById("cropInfo");
+const rleInfo = document.getElementById("rleInfo");
+const swatches = document.getElementById("swatches");
+const serialDot = document.getElementById("serialDot");
+const serialText = document.getElementById("serialText");
+
+let image = null;
+let crop = null;          // image-space {x,y,w,h}
+let drag = null;
+let compressed = null;
+let palette = null;
+let indices = null;
+let serialPort = null;
+let serialWriter = null;
+let serialReader = null;
+let rxBuffer = [];
+let connected = false;
+
+function setStatus(text, kind = "") {
+  statusEl.textContent = text;
+  statusEl.className = "status " + kind;
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function fitRect() {
+  if (!image) return { scale: 1, ox: 0, oy: 0, w: editor.width, h: editor.height };
+  const scale = Math.min(editor.width / image.width, editor.height / image.height);
+  const w = image.width * scale, h = image.height * scale;
+  return { scale, ox: (editor.width - w) / 2, oy: (editor.height - h) / 2, w, h };
+}
+
+function resetCrop() {
+  if (!image) return;
+  const iw = image.width, ih = image.height;
+  let w, h;
+  if (iw / ih > 2) { h = ih; w = h * 2; }
+  else { w = iw; h = w / 2; }
+  crop = { x: (iw - w) / 2, y: (ih - h) / 2, w, h };
+  update();
+}
+
+function draw() {
+  ectx.clearRect(0, 0, editor.width, editor.height);
+  if (!image) return;
+  const f = fitRect();
+  ectx.imageSmoothingEnabled = true;
+  ectx.drawImage(image, f.ox, f.oy, f.w, f.h);
+
+  ectx.save();
+  ectx.fillStyle = "rgba(0,0,0,.58)";
+  const sx = f.ox + crop.x * f.scale;
+  const sy = f.oy + crop.y * f.scale;
+  const sw = crop.w * f.scale;
+  const sh = crop.h * f.scale;
+  ectx.fillRect(f.ox, f.oy, f.w, sy - f.oy);
+  ectx.fillRect(f.ox, sy + sh, f.w, f.oy + f.h - (sy + sh));
+  ectx.fillRect(f.ox, sy, sx - f.ox, sh);
+  ectx.fillRect(sx + sw, sy, f.ox + f.w - (sx + sw), sh);
+
+  ectx.strokeStyle = "#ff8db4";
+  ectx.lineWidth = 2;
+  ectx.strokeRect(sx + .5, sy + .5, sw - 1, sh - 1);
+  ectx.strokeStyle = "rgba(255,255,255,.35)";
+  ectx.lineWidth = 1;
+  ectx.strokeRect(sx + 5.5, sy + 5.5, sw - 11, sh - 11);
+
+  // thirds
+  ectx.strokeStyle = "rgba(255,255,255,.13)";
+  for (let i = 1; i < 3; i++) {
+    ectx.beginPath();
+    ectx.moveTo(sx + sw * i / 3, sy);
+    ectx.lineTo(sx + sw * i / 3, sy + sh);
+    ectx.stroke();
+    ectx.beginPath();
+    ectx.moveTo(sx, sy + sh * i / 3);
+    ectx.lineTo(sx + sw, sy + sh * i / 3);
+    ectx.stroke();
+  }
+
+  // corner handle
+  ectx.fillStyle = "#ff8db4";
+  ectx.beginPath();
+  ectx.arc(sx + sw - 2, sy + sh - 2, 9, 0, Math.PI * 2);
+  ectx.fill();
+  ectx.fillStyle = "#2a0b18";
+  ectx.beginPath();
+  ectx.arc(sx + sw - 2, sy + sh - 2, 3.5, 0, Math.PI * 2);
+  ectx.fill();
+  ectx.restore();
+}
+
+function cropBoxScreen() {
+  const f = fitRect();
+  return {
+    x: f.ox + crop.x * f.scale,
+    y: f.oy + crop.y * f.scale,
+    w: crop.w * f.scale,
+    h: crop.h * f.scale,
+    scale: f.scale
+  };
+}
+
+function pointerPos(ev) {
+  const r = editor.getBoundingClientRect();
+  return {
+    x: (ev.clientX - r.left) * editor.width / r.width,
+    y: (ev.clientY - r.top) * editor.height / r.height
+  };
+}
+
+editor.addEventListener("pointerdown", (ev) => {
+  if (!image) return;
+  const p = pointerPos(ev);
+  const b = cropBoxScreen();
+  const nearCorner = Math.hypot(p.x - (b.x + b.w), p.y - (b.y + b.h)) < 22;
+  if (nearCorner) {
+    drag = { mode: "resize", sx: p.x, sy: p.y, start: { ...crop } };
+  } else if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) {
+    drag = { mode: "move", sx: p.x, sy: p.y, start: { ...crop }, scale: b.scale };
+  } else {
+    drag = null;
+  }
+  if (drag) {
+    editor.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  }
+});
+
+editor.addEventListener("pointermove", (ev) => {
+  if (!image || !drag) return;
+  const p = pointerPos(ev);
+  if (drag.mode === "move") {
+    const dx = (p.x - drag.sx) / drag.scale;
+    const dy = (p.y - drag.sy) / drag.scale;
+    crop.x = clamp(drag.start.x + dx, 0, image.width - crop.w);
+    crop.y = clamp(drag.start.y + dy, 0, image.height - crop.h);
+  } else {
+    const dx = (p.x - drag.sx) / cropBoxScreen().scale;
+    let w = clamp(drag.start.w + dx, 40, Math.min(image.width, image.height * 2));
+    let h = w / 2;
+    if (drag.start.y + h > image.height) {
+      h = image.height - drag.start.y;
+      w = h * 2;
+    }
+    if (drag.start.x + w > image.width) {
+      w = image.width - drag.start.x;
+      h = w / 2;
+    }
+    crop.w = w;
+    crop.h = h;
+  }
+  update();
+});
+
+function endDrag() { drag = null; }
+editor.addEventListener("pointerup", endDrag);
+editor.addEventListener("pointercancel", endDrag);
+
+editor.addEventListener("wheel", (ev) => {
+  if (!image) return;
+  ev.preventDefault();
+  const f = cropBoxScreen();
+  const p = pointerPos(ev);
+  const cx = crop.x + crop.w / 2, cy = crop.y + crop.h / 2;
+  const factor = ev.deltaY < 0 ? 1.06 : 1 / 1.06;
+  let w = clamp(crop.w * factor, 40, Math.min(image.width, image.height * 2));
+  let h = w / 2;
+  crop.x = clamp(cx - w / 2, 0, image.width - w);
+  crop.y = clamp(cy - h / 2, 0, image.height - h);
+  crop.w = w;
+  crop.h = h;
+  update();
+}, { passive: false });
+
+function loadFile(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    image = img;
+    empty.style.display = "none";
+    resetCrop();
+    document.getElementById("download").disabled = true;
+    setStatus(`已载入 ${img.width}×${img.height}，拖动裁剪框选择区域。`);
+  };
+  img.onerror = () => setStatus("图片载入失败。", "err");
+  img.src = url;
+}
+
+document.getElementById("file").addEventListener("change", e => loadFile(e.target.files[0]));
+document.getElementById("file2").addEventListener("change", e => loadFile(e.target.files[0]));
+document.getElementById("resetCrop").addEventListener("click", resetCrop);
+
+/* ------------------------- quantize / RLE ------------------------- */
+
+function quantize16(data) {
+  const pixels = [];
+  for (let i = 0; i < data.length; i += 4) {
+    pixels.push([data[i], data[i + 1], data[i + 2]]);
+  }
+  let boxes = [{ idx: pixels.map((_, i) => i) }];
+  while (boxes.length < 16) {
+    let best = -1, bestRange = -1, bestCh = 0;
+    boxes.forEach((box, bi) => {
+      if (box.idx.length < 2) return;
+      for (let ch = 0; ch < 3; ch++) {
+        let mn = 255, mx = 0;
+        for (const pi of box.idx) {
+          const v = pixels[pi][ch];
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+        }
+        if (mx - mn > bestRange) { bestRange = mx - mn; best = bi; bestCh = ch; }
+      }
+    });
+    if (best < 0 || bestRange <= 0) break;
+    const box = boxes.splice(best, 1)[0];
+    const idx = box.idx.slice().sort((a, b) => pixels[a][bestCh] - pixels[b][bestCh]);
+    const mid = idx.length >> 1;
+    boxes.push({ idx: idx.slice(0, mid) });
+    boxes.push({ idx: idx.slice(mid) });
+  }
+  const pal = boxes.map(box => {
+    if (!box.idx.length) return [0, 0, 0];
+    let r = 0, g = 0, b = 0;
+    for (const pi of box.idx) { r += pixels[pi][0]; g += pixels[pi][1]; b += pixels[pi][2]; }
+    const n = box.idx.length;
+    return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+  });
+  while (pal.length < 16) pal.push([0, 0, 0]);
+
+  const pal565 = pal.map(c => {
+    const r = (c[0] >> 3) & 31, g = (c[1] >> 2) & 63, b = (c[2] >> 3) & 31;
+    return (r << 11) | (g << 5) | b;
+  });
+
+  const idxOut = new Array(OUT_W * OUT_H);
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i];
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < 16; k++) {
+      const dr = p[0] - pal[k][0], dg = p[1] - pal[k][1], db = p[2] - pal[k][2];
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bd) { bd = d; best = k; }
+    }
+    idxOut[i] = best;
+  }
+  return { pal565, pal, idx: idxOut };
+}
+
+function packNibbles(idx) {
+  const out = new Uint8Array(Math.ceil(idx.length / 2));
+  for (let i = 0; i < idx.length; i += 2) {
+    out[i >> 1] = (idx[i] << 4) | (idx[i + 1] ?? 0);
+  }
+  return out;
+}
+
+function packBits(src) {
+  const out = [];
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    let run = 1;
+    while (i + run < n && src[i + run] === src[i] && run < 128) run++;
+    if (run >= 3) {
+      out.push(257 - run, src[i]);
+      i += run;
+    } else {
+      let start = i;
+      i += run;
+      while (i < n && out.length < 65000) {
+        let r = 1;
+        while (i + r < n && src[i + r] === src[i] && r < 128) r++;
+        if (r >= 3 || i - start >= 128) break;
+        i += r;
+      }
+      let len = i - start;
+      while (len > 0) {
+        const take = Math.min(128, len);
+        out.push(take - 1);
+        for (let k = 0; k < take; k++) out.push(src[start + k]);
+        start += take;
+        len -= take;
+      }
+    }
+  }
+  return new Uint8Array(out);
+}
+
+function crc32(bytes) {
+  let crc = 0xFFFFFFFF >>> 0;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let b = 0; b < 8; b++) {
+      crc = ((crc & 1) ? ((crc >>> 1) ^ 0xEDB88320) : (crc >>> 1)) >>> 0;
+    }
+  }
+  return (~crc) >>> 0;
+}
+
+let paletteRGB = null;
+let appColors = [
+  [252, 159, 191], [5, 255, 255], [156, 158, 156], [255, 255, 255], [8, 97, 129]
+];
+let colorInputsBuilt = false;
+
+function rgb565(rgb) {
+  const r = (Math.max(0, Math.min(255, rgb[0])) >> 3) & 31;
+  const g = (Math.max(0, Math.min(255, rgb[1])) >> 2) & 63;
+  const b = (Math.max(0, Math.min(255, rgb[2])) >> 3) & 31;
+  return (r << 11) | (g << 5) | b;
+}
+
+function rgbHex(rgb) {
+  return "#" + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+}
+
+function hexRgb(hex) {
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+}
+
+function rgbToHsv(rgb) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 0) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx === 0 ? 0 : d / mx, v: mx };
+}
+
+function hsvToRgb(h, s, v) {
+  h = ((h % 360) + 360) % 360;
+  const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+function deriveMonet(pal) {
+  let best = pal[0], bestScore = -1;
+  for (const c of pal) {
+    const hsv = rgbToHsv(c);
+    const score = hsv.s * 0.72 + (1 - Math.abs(hsv.v - 0.62)) * 0.28;
+    if (hsv.v > 0.22 && score > bestScore) { bestScore = score; best = c; }
+  }
+  const base = rgbToHsv(best);
+  const hue = base.s < 0.12 ? 320 : base.h;
+  // 五级色：主/二/三/四/五，最后一级刻意压暗作为面板底色
+  const specs = [
+    [0,   0.72, 0.94],
+    [32,  0.62, 0.82],
+    [-32, 0.58, 0.74],
+    [62,  0.42, 0.92],
+    [-62, 0.55, 0.24]
+  ];
+  return specs.map(([dh, s, v]) => hsvToRgb(hue + dh, s, v));
+}
+
+function renderColorInputs() {
+  const grid = document.getElementById("colorGrid");
+  if (!colorInputsBuilt) {
+    const names = ["主要强调", "二级强调", "三级色彩", "四级色彩", "五级色彩"];
+    grid.innerHTML = "";
+    names.forEach((name, i) => {
+      const item = document.createElement("label");
+      item.className = "color-item";
+      item.innerHTML = `<input type="color" id="appColor${i}"><div><b>${name}</b>色值 ${i + 1}</div>`;
+      grid.appendChild(item);
+    });
+    colorInputsBuilt = true;
+    appColors.forEach((c, i) => {
+      document.getElementById("appColor" + i).value = rgbHex(c);
+    });
+  }
+  const monet = document.querySelector('input[name=colorMode]:checked').value === "monet";
+  appColors.forEach((c, i) => {
+    if (monet) {
+      document.getElementById("appColor" + i).value = rgbHex(c);
+    }
+    document.getElementById("appColor" + i).disabled = monet;
+  });
+}
+
+function readCustomColors() {
+  return [0, 1, 2, 3, 4].map(i => hexRgb(document.getElementById("appColor" + i).value));
+}
+
+function currentAppColors() {
+  return document.querySelector('input[name=colorMode]:checked').value === "monet" ?
+    appColors : readCustomColors();
+}
+
+function update() {
+  if (!image || !crop) return;
+  draw();
+  cropInfo.textContent = `${Math.round(crop.w)}×${Math.round(crop.h)} @ ${Math.round(crop.x)},${Math.round(crop.y)}`;
+
+  const src = document.createElement("canvas");
+  src.width = OUT_W; src.height = OUT_H;
+  const sctx = src.getContext("2d", { willReadFrequently: true });
+  sctx.imageSmoothingEnabled = true;
+  sctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, OUT_W, OUT_H);
+  const data = sctx.getImageData(0, 0, OUT_W, OUT_H).data;
+
+  // preview at 3x with nearest
+  pctx.imageSmoothingEnabled = false;
+  pctx.clearRect(0, 0, OUT_W, OUT_H);
+  pctx.drawImage(src, 0, 0);
+
+  const q = quantize16(data);
+  palette = q.pal565;
+  paletteRGB = q.pal;
+  indices = q.idx;
+  if (document.querySelector('input[name=colorMode]:checked').value === "monet") {
+    appColors = deriveMonet(paletteRGB);
+  }
+  renderColorInputs();
+  const packed = packNibbles(indices);
+  compressed = packBits(packed);
+  rleInfo.textContent = `${compressed.length} B / ${MAX_RLE} B`;
+
+  swatches.innerHTML = "";
+  palette.forEach(c => {
+    const r = ((c >> 11) & 31) * 255 / 31;
+    const g = ((c >> 5) & 63) * 255 / 63;
+    const b = (c & 31) * 255 / 31;
+    const d = document.createElement("div");
+    d.style.background = `rgb(${r|0},${g|0},${b|0})`;
+    d.title = `#${((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1)}`;
+    swatches.appendChild(d);
+  });
+
+  const ok = compressed.length <= MAX_RLE;
+  rleInfo.style.color = ok ? "var(--ok)" : "var(--err)";
+  document.getElementById("download").disabled = !ok;
+  document.getElementById("upload").disabled = !ok || !connected || uploadBusy;
+  if (!ok) {
+    setStatus(`RLE ${compressed.length} B 超过 ${MAX_RLE} B 上限，请换图或减少细节。`, "err");
+  } else if (!uploadBusy) {
+    setStatus(`就绪：160×80 · 16 色 · RLE ${compressed.length} B。连接串口后可上传。`, "");
+  }
+}
+
+/* ------------------------- Web Serial ------------------------- */
+
+let uploadBusy = false;
+
+async function connectSerial() {
+  if (!("serial" in navigator)) {
+    setStatus("当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge。", "err");
+    return;
+  }
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 115200, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" });
+    serialWriter = serialPort.writable.getWriter();
+    serialReader = serialPort.readable.getReader();
+    connected = true;
+    serialDot.classList.add("on");
+    serialText.textContent = "串口已连接";
+    document.getElementById("connect").disabled = true;
+    document.getElementById("disconnect").disabled = false;
+    document.getElementById("upload").disabled = !compressed || uploadBusy;
+    setStatus("串口已连接。点击上传按钮。", "ok");
+  } catch (e) {
+    setStatus("串口连接失败：" + e.message, "err");
+  }
+}
+
+async function disconnectSerial() {
+  try {
+    if (serialReader) { await serialReader.cancel(); serialReader.releaseLock(); }
+    if (serialWriter) { serialWriter.releaseLock(); }
+    if (serialPort) { await serialPort.close(); }
+  } catch (_) {}
+  serialReader = serialWriter = serialPort = null;
+  rxBuffer = [];
+  connected = false;
+  serialDot.classList.remove("on");
+  serialText.textContent = "串口未连接";
+  document.getElementById("connect").disabled = false;
+  document.getElementById("disconnect").disabled = true;
+  document.getElementById("upload").disabled = true;
+}
+
+async function readByte(timeoutMs = 6000) {
+  const start = performance.now();
+  while (rxBuffer.length === 0) {
+    if (performance.now() - start > timeoutMs) throw new Error("等待设备响应超时");
+    const result = await Promise.race([
+      serialReader.read(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("等待设备响应超时")), timeoutMs))
+    ]);
+    if (result.done) throw new Error("串口已关闭");
+    if (result.value) rxBuffer.push(...result.value);
+  }
+  return rxBuffer.shift();
+}
+
+async function expectByte(want, timeoutMs) {
+  const b = await readByte(timeoutMs);
+  if (b !== want) throw new Error(`设备返回 0x${b.toString(16)}，期望 0x${want.toString(16)}`);
+  return b;
+}
+
+function le32(v) {
+  return new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+}
+
+async function uploadLogo() {
+  if (!connected || !compressed) return;
+  if (compressed.length > MAX_RLE) { setStatus("RLE 超过容量。", "err"); return; }
+  uploadBusy = true;
+  document.getElementById("upload").disabled = true;
+  try {
+    const crc = crc32(compressed);
+    const wallpaperMode = document.getElementById("targetMode").value === "wallpaper";
+    const colors = wallpaperMode ? currentAppColors() : null;
+    setStatus("正在通知设备擦除图片区…", "warn");
+    await serialWriter.write(new Uint8Array([wallpaperMode ? 0x57 : 0x4C])); // 'W' / 'L'
+    await expectByte(0x52, 10000); // 'R'
+
+    const paletteOffset = wallpaperMode ? 18 : 8;
+    const meta = new Uint8Array(wallpaperMode ? 50 : 40);
+    meta.set(le32(compressed.length), 0);
+    meta.set(le32(crc), 4);
+    if (wallpaperMode) {
+      colors.forEach((c, i) => {
+        const v = rgb565(c);
+        meta[8 + i * 2] = v & 255;
+        meta[9 + i * 2] = (v >>> 8) & 255;
+      });
+    }
+    for (let i = 0; i < 16; i++) {
+      meta[paletteOffset + i * 2] = palette[i] & 255;
+      meta[paletteOffset + 1 + i * 2] = (palette[i] >>> 8) & 255;
+    }
+    await serialWriter.write(meta);
+    await expectByte(0x4D, 5000); // 'M'
+
+    setStatus(`正在上传 ${compressed.length} B…`, "warn");
+    for (let off = 0; off < compressed.length; off += 128) {
+      const chunk = new Uint8Array(128);
+      chunk.set(compressed.subarray(off, Math.min(off + 128, compressed.length)));
+      await serialWriter.write(chunk);
+      await expectByte(0x06, 6000);
+      const pct = Math.min(100, Math.round((off + 128) / compressed.length * 100));
+      setStatus(`正在上传 ${Math.min(off + 128, compressed.length)} / ${compressed.length} B（${pct}%）`, "warn");
+    }
+
+    await serialWriter.write(new Uint8Array([0x04])); // EOT
+    await expectByte(0x4B, 5000); // 'K'
+    setStatus(wallpaperMode ?
+      "壁纸与五级主题色上传成功。壁纸已用于 maindash，启动 Logo 显示时长在 BOOT LOGO 菜单设置。" :
+      "启动 Logo 上传成功。显示时长在 DISPLAY / UI → BOOT LOGO 设置。", "ok");
+  } catch (e) {
+    await disconnectSerial();
+    setStatus("上传失败：" + e.message + "。串口已断开，请重新连接后重试；设备图片区可能已擦除。", "err");
+  } finally {
+    uploadBusy = false;
+    document.getElementById("upload").disabled = !connected || !compressed;
+  }
+}
+
+document.getElementById("connect").addEventListener("click", connectSerial);
+document.getElementById("disconnect").addEventListener("click", disconnectSerial);
+document.getElementById("upload").addEventListener("click", uploadLogo);
+document.getElementById("targetMode").addEventListener("change", () => {
+  const wallpaperMode = document.getElementById("targetMode").value === "wallpaper";
+  document.getElementById("colorBox").style.display = wallpaperMode ? "" : "none";
+  document.getElementById("upload").textContent = wallpaperMode ? "上传壁纸" : "上传启动 Logo";
+});
+document.querySelectorAll('input[name=colorMode]').forEach(el => {
+  el.addEventListener("change", () => {
+    if (el.value === "monet" && paletteRGB) {
+      appColors = deriveMonet(paletteRGB);
+    }
+    renderColorInputs();
+    if (image) update();
+  });
+});
+document.getElementById("download").addEventListener("click", () => {
+  if (!compressed) return;
+  const blob = new Blob([compressed], { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "chill245-bootlogo.rle";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+window.addEventListener("dragover", (e) => { e.preventDefault(); });
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer.files && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+// initial canvas size / empty state
+draw();
+renderColorInputs();
+setStatus("等待图片。");
+</script>
+</body>
+</html>

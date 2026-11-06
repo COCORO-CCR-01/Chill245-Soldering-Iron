@@ -1,4 +1,4 @@
-# Chill245 烙铁控制
+# Chill245 烙铁控制器（PlatformIO）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
@@ -48,14 +48,14 @@ pio run -t upload       # 烧录（板级默认 atlink，可在 platformio.ini �
 .pio/build/genericAT32F421G8U7/firmware.bin
 ```
 
-> `platformio.ini` 使用 `board_build.ldscript = linker/AT32F421x8_62K.ld`，程序区 62 KB，最后 2 KB 留给 Flash 参数区。
+> `platformio.ini` 使用 `board_build.ldscript = linker/AT32F421x8_62K.ld`，程序区 **54 KB**，最后 **10 KB** 留给参数区和启动 Logo（2 KB 双扇区参数 + 8 KB Logo）。
 >
-> 全局编译使用 `-Os` 节省 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制路径速度。
+> 全局编译使用 `-Os + -flto` 节省 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制路径速度。
 
 ### 启动
 
 - `APP_ENABLE_DISPLAY` 为 **1**：显示初始化和主界面刷新已恢复
-- 串口调试系统已完全删除；PA9/PA10 不再初始化
+- 串口调试系统已删除；PA9/PA10 改为启动图上传串口 USART1（115200 8N1）
 - 保留 HardFault 快速闪 PA6、PLL 超时回退 HICK
 - 若 PA6 快速连续闪：进入 `HardFault_Handler`，属于硬件异常
 - PLL 锁定/切换超时会自动回退到 HICK 8 MHz，优先保证能启动
@@ -166,6 +166,77 @@ HEATING        SLEEP ● 300s
 - 底部保留工作状态、错误信息和 `SLEEP` 遥测。
 - 页面指示条仍在最底部 y=77。
 
+### 启动 Logo / 壁纸 / 主题色
+
+启动图与 maindash 壁纸共用 Flash 末尾同一张 8 KB 图片；上传壁纸也会更新启动图。
+
+```text
+0x0800D800 ~ 0x0800DBFF   参数记录 0（1 KB 扇区）
+0x0800DC00 ~ 0x0800DFFF   参数记录 1（1 KB 扇区）
+0x0800E000 ~ 0x0800FFFF   启动图 / 壁纸（8 KB）
+```
+
+- 分辨率固定 **160×80**，**16 色**，4bpp 打包后 6400 B。
+- 使用 PackBits RLE 压缩，数据上限 **8064 B**；最坏随机图约 6450 B，仍有容量余量。
+- 每张图片包含 16 色 RGB565 调色板和 CRC32。
+- 没有有效图片时 `bootlogo_is_valid()` / `wallpaper_is_available()` 返回 0，开机不显示，菜单延时设置也不会生效。
+- 菜单 `DISPLAY / UI -> BOOT LOGO` 设置开机显示秒数，范围 0~10 s，默认 0；设置值不会再被图片校验/参数保存清零。
+- 开机显示在 `eeprom_apply()` 之后、恢复加热之前，显示期间不加热。
+- [wallpaper.c](src/wallpaper.c) 把同一张图片以 **10/16 亮度**绘制到 maindash，避免壁纸压过前景。
+- [appcolors.c](src/appcolors.c) 提供五级主题色：
+  - `primary`：温度、进度、主要强调
+  - `secondary`：标签、次级信息
+  - `tertiary`：状态、错误
+  - `quaternary`：正文数值
+  - `quinary`：面板底色，自动压暗为 surface
+- 新版和旧版 maindash 都使用 appcolors；所有信息文字改为透明前景 + 1px 阴影，壁纸从字形内部和背景透出。
+- 只有进度条和分隔线保留实色；信息行不再使用整块不透明面板。
+- maindash 改为脏刷新：温度、SET/NOW、右侧两行、底部状态和功率条分别只重绘自己的矩形；壁纸变化/翻页时才整帧重绘。
+- 壁纸解码到 RAM 的 4bpp 缓存（6400 B），脏刷新用 `wallpaper_blit()` 恢复局部背景，不再每 250 ms 全屏重画。
+- 壁纸/启动图使用 **raw 像素流**，绕过暗/亮主题颜色映射，避免图片颜色被主题改写。
+- 面板存在红/蓝通道互换：`DISPLAY_SWAP_RB` 默认为 **1**，在 display.c 最底层把所有 RGB565 输出做 R/B 交换；MADCTL 仍保持 `0xA0`，不退回旧方向配置。
+- 默认三级色改为中性灰，避免默认界面标签变成绿色；透明文字阴影使用 0x0001 近黑，避免亮色主题把阴影映射成白色。
+
+#### 上位机
+
+用浏览器打开：
+
+[tools/bootlogo_uploader.html](tools/bootlogo_uploader.html)
+
+- Chrome / Edge 的 Web Serial API，页面必须运行在 `https://` 或 `localhost`。
+- 载入图片后可拖动 2:1 裁剪框、拖动右下角缩放、滚轮缩放。
+- 导出时严格缩放到 160×80，做 16 色中位切分量化，再 PackBits RLE 压缩。
+- 两种写入模式：
+  - **壁纸 + 主题色**：默认用类似 Monet 的方式从壁纸提取五级色，也可逐级自定义。
+  - **仅启动 Logo**：只更新图片，不改主题色。
+- USB-TTL 接 `PA9`（TX）、`PA10`（RX）、`GND`，115200 8N1。
+- 上传会擦除 8 KB Logo 区，期间强制关闭加热；完成后恢复。
+
+#### 上传协议
+
+```text
+仅 Logo:
+Host -> 'L'
+Device 擦除图片区 -> 'R'
+Host -> 40 B meta: data_len(LE32), crc32(LE32), palette[16](LE16)
+Device -> 'M'
+
+壁纸:
+Host -> 'W'
+Device 擦除图片区 -> 'R'
+Host -> 50 B meta: data_len, crc32, colors[5](LE16), palette[16](LE16)
+Device -> 'M'
+
+公共:
+Host -> 128 B chunks, 每包等待 0x06 ACK
+Host -> 0x04 EOT
+Device -> 'K'（失败返回 'E'）
+```
+
+`data_len` 为实际 RLE 字节数，最后一包补 0 到 128 B；CRC32 只覆盖实际数据。
+
+壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **8**。
+
 ### 新版全屏主界面
 
 在 `DISPLAY / UI -> ALT DASH` 中切换，旧主界面完整保留。
@@ -267,7 +338,7 @@ sector 62: 0x0800F800 ~ 0x0800FBFF
 sector 63: 0x0800FC00 ~ 0x0800FFFF
 ```
 
-- 自定义链接脚本 [AT32F421x8_62K.ld](linker/AT32F421x8_62K.ld:1) 把程序区限制为 **62 KB**
+- 自定义链接脚本 [AT32F421x8_62K.ld](linker/AT32F421x8_62K.ld:1) 把程序区限制为 **54 KB**
 - 双扇区交替写入，始终保留上一份有效记录
 - 记录包含 `magic + version + size + sequence + CRC32 + commit`
 - 写入前 `heater_force_off()`，并短暂关闭中断，避免 Flash 操作期间加热
@@ -689,7 +760,7 @@ SYSTEM
 - 蜂鸣器：PB5 / TMR3_CH2，非阻塞多音效；开机、按键、到温、休眠/深睡/关机、唤醒、故障、模式、菜单、整定和错误音；音量 0~100 可调。
 - 指示灯：PA6 / TMR3_CH1，运行时呼吸，待机/休眠慢闪，故障/HMS 快闪。
 - HMS：EEPROM 写失败、加热控制看门狗等不可恢复错误持续占用屏幕；设置可自检显示 ALL OK。
-- 参数保存：Flash 最后 2 KB 双扇区交替记录，CRC32 + commit，菜单关闭/自动整定完成自动保存；支持恢复默认。
+- 参数保存：Flash 末尾 10 KB 中，前 2 KB 双扇区交替记录参数（CRC32 + commit），后 8 KB 存启动 Logo；菜单关闭/自动整定完成自动保存；支持恢复默认。
 - 电源管理：PA2 电压换算（10k/1k 分压，VCC/11）、PB1 震动休眠、18~30V 保护、PB6/PB7 CH224A 电压诱骗（默认 20V）；欠压/过压时主界面显示 `V LOW` / `V HIGH`。
 
 ## 热电偶、消隐采样与热端校准
@@ -861,7 +932,9 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 
 - 启动文件、链接脚本、CMSIS、AT32F421 外设驱动由 PlatformIO 的 `at32firmlib` 框架提供，未重复复制。
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
-- 20 kHz 控制中断优先速度：`platformio.ini` 用 `build_unflags = -Os` + `build_flags = -O2` 覆盖默认优化级别，程序区 62 KB（最后 2 KB 留给参数区），当前 Flash 约 61 KB。
+- 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
+- LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
+- 当前 Flash 约 **52196 B（51.0 KiB）**，RAM 约 **13756 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒

@@ -329,7 +329,8 @@ static void sm_fast_update(void)
 
 
 
-void TMR1_BRK_OVF_TRG_HALL_IRQHandler(void)
+__attribute__((used, externally_visible))
+void sm_fast_update_irq(void)
 {
   if(tmr_interrupt_flag_get(((tmr_type *) ((((uint32_t)0x40000000) + 0x10000) + 0x2C00)), ((uint32_t)0x000001)) != RESET)
   {

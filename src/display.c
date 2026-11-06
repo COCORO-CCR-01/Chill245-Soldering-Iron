@@ -66,6 +66,9 @@
 /* 本面板不需要反显；开启 INVON 会导致黑底变白底 */
 #define DISPLAY_INVERT_COLORS           (0U)
 
+/* 软件修正面板红/蓝通道互换：保持 MADCTL RGB 不变，所有输出统一交换 R/B */
+#define DISPLAY_SWAP_RB                 (1U)
+
 /* 背光有效电平：1=高电平点亮 */
 #define DISPLAY_BL_ACTIVE_HIGH          (1U)
 
@@ -154,6 +157,17 @@ static uint16_t display_theme_color(uint16_t color)
     case 0x05FFU: return 0x025FU;  /* cyan/blue -> dark teal */
     default:      return color;
   }
+}
+
+static uint16_t display_panel_color(uint16_t color)
+{
+#if DISPLAY_SWAP_RB
+  return (uint16_t)(((color & 0x001FU) << 11) |
+                    (color & 0x07E0U) |
+                    ((color >> 11) & 0x001FU));
+#else
+  return color;
+#endif
 }
 
 /* ============================ 3x5 ASCII 字体 ============================ */
@@ -574,7 +588,7 @@ static void display_write_color_repeat(uint16_t color, uint32_t count)
     return;
   }
 
-  color = display_theme_color(color);
+  color = display_panel_color(display_theme_color(color));
   high = (uint8_t)(color >> 8);
   low = (uint8_t)(color & 0xFFU);
 
@@ -618,7 +632,7 @@ void display_write_pixels(const uint16_t *colors, uint32_t count)
 
   for(i = 0U; i < count; i++)
   {
-    color = display_theme_color(colors[i]);
+    color = display_panel_color(display_theme_color(colors[i]));
     display_spi_write_byte((uint8_t)(color >> 8));
     display_spi_write_byte((uint8_t)(color & 0xFFU));
   }
@@ -656,7 +670,25 @@ void display_write_pixel_stream(const uint16_t *colors, uint32_t count)
 
   for(i = 0U; i < count; i++)
   {
-    color = display_theme_color(colors[i]);
+    color = display_panel_color(display_theme_color(colors[i]));
+    display_spi_write_byte((uint8_t)(color >> 8));
+    display_spi_write_byte((uint8_t)(color & 0xFFU));
+  }
+}
+
+void display_write_pixel_stream_raw(const uint16_t *colors, uint32_t count)
+{
+  uint32_t i;
+  uint16_t color;
+
+  if((display_initialized == 0U) || (colors == NULL))
+  {
+    return;
+  }
+
+  for(i = 0U; i < count; i++)
+  {
+    color = display_panel_color(colors[i]);
     display_spi_write_byte((uint8_t)(color >> 8));
     display_spi_write_byte((uint8_t)(color & 0xFFU));
   }
@@ -783,8 +815,8 @@ static void display_draw_glyph(uint16_t x, uint16_t y,
     return;
   }
 
-  fg = display_theme_color(fg);
-  bg = display_theme_color(bg);
+  fg = display_panel_color(display_theme_color(fg));
+  bg = display_panel_color(display_theme_color(bg));
 
   display_set_window(x, y, (uint16_t)(3U * scale), (uint16_t)(5U * scale));
 
@@ -866,6 +898,87 @@ void display_draw_string(uint16_t x, uint16_t y, const char *text,
   {
     display_draw_char(x, y, *text, fg, bg, scale);
     x = (uint16_t)(x + (4U * scale));
+    text++;
+  }
+}
+
+void display_draw_char_transparent(uint16_t x, uint16_t y, char ch,
+                                   uint16_t fg, uint8_t scale)
+{
+  const display_glyph_t *glyph;
+  uint16_t row;
+  uint16_t col;
+  uint16_t dx;
+  uint16_t dy;
+  uint8_t bits;
+
+  if(display_initialized == 0U)
+  {
+    return;
+  }
+
+  if(scale == 0U)
+  {
+    scale = 1U;
+  }
+  if(scale > 4U)
+  {
+    scale = 4U;
+  }
+
+  glyph = display_find_glyph(ch);
+  fg = display_theme_color(fg);
+
+  for(row = 0U; row < 5U; row++)
+  {
+    bits = glyph->rows[row];
+    for(col = 0U; col < 3U; col++)
+    {
+      if((bits & (uint8_t)(1U << (2U - col))) != 0U)
+      {
+        for(dy = 0U; dy < scale; dy++)
+        {
+          for(dx = 0U; dx < scale; dx++)
+          {
+            display_draw_pixel((uint16_t)(x + col * scale + dx),
+                               (uint16_t)(y + row * scale + dy), fg);
+          }
+        }
+      }
+    }
+  }
+}
+
+void display_draw_string_transparent(uint16_t x, uint16_t y,
+                                     const char *text,
+                                     uint16_t fg, uint8_t scale)
+{
+  uint16_t shadow_x;
+  uint16_t shadow_y;
+
+  if((display_initialized == 0U) || (text == NULL))
+  {
+    return;
+  }
+
+  if(scale == 0U)
+  {
+    scale = 1U;
+  }
+  if(scale > 4U)
+  {
+    scale = 4U;
+  }
+
+  shadow_x = (uint16_t)(x + 1U);
+  shadow_y = (uint16_t)(y + 1U);
+
+  while(*text != '\0')
+  {
+    display_draw_char_transparent(shadow_x, shadow_y, *text, 0x0001U, scale);
+    display_draw_char_transparent(x, y, *text, fg, scale);
+    x = (uint16_t)(x + (4U * scale));
+    shadow_x = (uint16_t)(shadow_x + (4U * scale));
     text++;
   }
 }

@@ -14,6 +14,8 @@
 #include "at32f421_wk_config.h"
 #include "wk_system.h"
 #include "display.h"
+#include "bootlogo.h"
+#include "appcolors.h"
 #include "buttons.h"
 #include "powermanagement.h"
 #include "menu.h"
@@ -24,6 +26,7 @@
 #include "tempcal.h"
 #include "onekeyboost.h"
 #include "maindash.h"
+#include "wallpaper.h"
 #include "graph.h"
 #include "autoroll.h"
 #include "statemachine.h"
@@ -249,8 +252,15 @@ int main(void)
   onekeyboost_init();
 
   /* 加载 Flash 参数并应用；无有效记录时使用模块默认值 */
+  appcolors_init();
   eeprom_init();
   eeprom_apply();
+
+  bootlogo_init();
+  if(hms_has_fatal() == 0U)
+  {
+    bootlogo_boot(g_eeprom_params.bootlogo_delay_s);
+  }
 
   /* 参数和输入电压档位应用完成后再恢复加热；HMS 致命错误保持关闭 */
   if((hms_has_fatal() == 0U) &&
@@ -306,6 +316,13 @@ int main(void)
 
     /* 震动休眠、电压保护、输入电压更新 */
     power_update(now_ms);
+
+    /* 启动图上传：收到上位机命令时阻塞接收并写 Flash */
+    if(bootlogo_poll() != 0U)
+    {
+      (void)wallpaper_prepare();
+      maindash_invalidate();
+    }
 
     /* OneKeyBoost：掉温检测、超时、异常退出 */
     onekeyboost_task(now_ms);

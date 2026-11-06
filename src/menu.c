@@ -208,6 +208,7 @@ static const menu_item_t menu_ui_items[] =
   { "MAIN PAGE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_main_page },
   { "ALT DASH",  MENU_ITEM_BOOL,  &menu_config.maindash_alt, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "LIGHT MODE", MENU_ITEM_BOOL, &menu_config.ui_light,      NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
+  { "BOOT LOGO", MENU_ITEM_FLOAT, &menu_config.bootlogo_delay_s, NULL, NULL, 0, 1.0f, 0.0f, 10.0f, 0U, "s", NULL },
   { "BACK",      MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
 };
 

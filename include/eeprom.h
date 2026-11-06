@@ -11,17 +11,18 @@ extern "C" {
 
 /*
  * 参数区使用最后 2 KB：
- *   sector 62: 0x0800F800 ~ 0x0800FBFF
- *   sector 63: 0x0800FC00 ~ 0x0800FFFF
+ *   sector 54: 0x0800D800 ~ 0x0800DBFF
+ *   sector 55: 0x0800DC00 ~ 0x0800DFFF
+ *   sector 56..63: 0x0800E000 ~ 0x0800FFFF  boot logo RLE storage
  * 链接脚本 AT32F421x8_62K.ld 把程序区限制为 62 KB，
  * 避免代码/常量占用这两个参数扇区。
  */
-#define EEPROM_FLASH_BASE               (0x0800F800UL)
+#define EEPROM_FLASH_BASE               (0x0800D800UL)
 #define EEPROM_SECTOR_SIZE              (1024UL)
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x0005U)
+#define EEPROM_FORMAT_VERSION           (0x0008U)
 
 /**
   * @brief  所有掉电保存参数
@@ -41,6 +42,8 @@ typedef struct
 
   float stationary_s;
   float sleep_power_pct;
+  float bootlogo_delay_s;
+  uint16_t app_colors[5];
   float reduced_temp_c;
   float reduced_off_s;
   float backlight_off_s;
