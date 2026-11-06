@@ -1,4 +1,4 @@
-# Chill245 烙铁控制器
+# Chill245 烙铁控制器（PlatformIO）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
@@ -165,6 +165,21 @@ HEATING        SLEEP ● 300s
   - `VIN` / `COLD`
 - 底部保留工作状态、错误信息和 `SLEEP` 遥测。
 - 页面指示条仍在最底部 y=77。
+
+### About 页面
+
+`SYSTEM -> ABOUT` 打开关于页：
+
+- 左侧为项目地址二维码（33×33 QR，2px 模块，白色静区）
+- 右侧显示：
+  - `CHILL245`
+  - `SOLDERING`
+  - 作者 `COCORO-CCR-01`
+  - 版本 `Release-00.01.0007`
+  - `ISSUES WELCOME`
+- 任意按键返回 SYSTEM 列表
+- 版本和作者定义在 [version.h](include/version.h)
+- 二维码数据在 [about_qr.h](include/about_qr.h)
 
 ### 启动 Logo / 壁纸 / 主题色
 
@@ -939,7 +954,7 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **52196 B（51.0 KiB）**，RAM 约 **13756 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
+- 当前 Flash 约 **53124 B（51.9 KiB）**，RAM 约 **13904 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒

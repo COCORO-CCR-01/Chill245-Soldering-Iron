@@ -17,6 +17,8 @@
 #include "fmt.h"
 #include "display.h"
 #include "appcolors.h"
+#include "about_qr.h"
+#include "version.h"
 #include "statemachine.h"
 #include "pid.h"
 #include "temp.h"
@@ -93,7 +95,8 @@ typedef enum
 {
   MENU_VIEW_LIST = 0,
   MENU_VIEW_EDIT,
-  MENU_VIEW_CURVE
+  MENU_VIEW_CURVE,
+  MENU_VIEW_ABOUT
 } menu_view_t;
 
 typedef enum
@@ -149,6 +152,7 @@ static void menu_action_hms(void);
 static void menu_action_defaults(void);
 static void menu_action_tip_cal(void);
 static void menu_action_main_page(void);
+static void menu_action_about(void);
 static float menu_item_step(const menu_item_t *item);
 
 /* ------------------------------------------------------------------------- */
@@ -232,6 +236,7 @@ static const menu_item_t menu_system_items[] =
   { "HMS SELF TEST",  MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_hms },
   { "TIP CAL",        MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_tip_cal },
   { "DEFAULTS",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_defaults },
+  { "ABOUT",          MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_about },
   { "EXIT MENU",      MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_exit },
   { "BACK",           MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
 };
@@ -935,6 +940,12 @@ static void menu_action_main_page(void)
   menu_close();
 }
 
+static void menu_action_about(void)
+{
+  menu_nav.view = (uint8_t)MENU_VIEW_ABOUT;
+  menu_need_draw = 1U;
+}
+
 /* ------------------------------------------------------------------------- */
 /* 绘制                                                                       */
 /* ------------------------------------------------------------------------- */
@@ -1357,10 +1368,63 @@ static void menu_draw_header_counter(char *text, uint16_t size)
            (unsigned)(menu_nav.selected + 1U), (unsigned)count);
 }
 
+static void menu_draw_about(void)
+{
+  static uint16_t qr_line[78];
+  uint16_t x;
+  uint16_t y;
+  uint16_t mx;
+  uint16_t my;
+  uint8_t bit;
+
+  display_clear(UI_BLACK);
+
+  display_set_window(0U, 0U, 78U, 78U);
+  display_begin_pixel_stream();
+
+  for(y = 0U; y < 78U; y++)
+  {
+    for(x = 0U; x < 78U; x++)
+    {
+      qr_line[x] = 0xFFFFU;
+      if((x >= 6U) && (x < 72U) && (y >= 6U) && (y < 72U))
+      {
+        mx = (uint16_t)((x - 6U) / 2U);
+        my = (uint16_t)((y - 6U) / 2U);
+        bit = (uint8_t)((about_qr[my][mx >> 3] >>
+                         (7U - (mx & 7U))) & 1U);
+        if(bit != 0U)
+        {
+          qr_line[x] = 0x0000U;
+        }
+      }
+    }
+    display_write_pixel_stream_raw(qr_line, 78U);
+  }
+  display_end_pixel_stream();
+
+  display_draw_string_transparent(80U, 3U, "CHILL245", UI_ACCENT, 2U);
+  display_draw_string_transparent(80U, 14U, "SOLDERING", UI_GRAY, 1U);
+  display_draw_string_transparent(80U, 25U, "AUTHOR", UI_GRAY, 1U);
+  display_draw_string_transparent(80U, 31U, "COCORO", UI_WHITE, 1U);
+  display_draw_string_transparent(80U, 37U, "CCR-01", UI_WHITE, 1U);
+  display_draw_string_transparent(80U, 49U, "VERSION", UI_GRAY, 1U);
+  display_draw_string_transparent(80U, 55U, FW_VERSION, UI_WHITE, 1U);
+  display_draw_string_transparent(80U, 67U, "ISSUES", UI_GRAY, 1U);
+  display_draw_string_transparent(80U, 72U, "WELCOME", UI_WHITE, 1U);
+}
+
 static void menu_draw(void)
 {
   char counter[12];
   const char *title;
+
+  if(menu_nav.view == (uint8_t)MENU_VIEW_ABOUT)
+  {
+    menu_draw_about();
+    menu_need_draw = 0U;
+    return;
+  }
 
   display_clear(UI_BLACK);
 
@@ -1426,6 +1490,16 @@ static void menu_on_button(button_id_t button, button_event_t event)
 
   if(menu_open_flag == 0U)
   {
+    return;
+  }
+
+  if(menu_nav.view == (uint8_t)MENU_VIEW_ABOUT)
+  {
+    if((event == BUTTON_EVENT_CLICK) || (event == BUTTON_EVENT_REPEAT))
+    {
+      menu_nav.view = (uint8_t)MENU_VIEW_LIST;
+      menu_need_draw = 1U;
+    }
     return;
   }
 
