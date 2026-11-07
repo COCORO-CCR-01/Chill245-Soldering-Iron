@@ -1,4 +1,5 @@
-# Chill245 烙铁控制器（PlatformIO）
+# Chill245 烙铁控制器
+本项目将永远保持免费且开源，给我 Star 以作支持
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
