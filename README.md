@@ -175,7 +175,7 @@ HEATING        SLEEP ● 300s
   - `CHILL245`
   - `SOLDERING`
   - 作者 `COCORO-CCR-01`
-  - 版本 `Release-00.10.0000`
+  - 版本 `Release-00.10.0100`
   - `ISSUES WELCOME`
 - 任意按键返回 SYSTEM 列表
 - 版本和作者定义在 [version.h](include/version.h)
@@ -767,7 +767,9 @@ SYSTEM
 - 更换 NTC 时只需修改 preset.h 中的 R25、B 值、分压电阻、拓扑、校准偏移和表范围，然后重新编译。
 - 上电或 ADC 恢复后的初始热端温度直接继承冷端温度，避免出现 0°C/负温跳变。
 - 热电偶默认曲线可用 `TEMP_TC_TRIM_GAIN/OFFSET_C` 微调；全量程精修建议使用 7 点 `TIP CAL`。
-- 热电偶默认二次拟合 `T=-1.1948e-6*N^2+0.19073*N+23.78`；100~400°C 七点校准可生成 10 点查表。
+- 热电偶默认公式：`x = 240*N/(1+a)`，`T = -4.73e-7*x^2 + 0.12*x + 23.78`。
+- 热端电阻 `a` 在 `include/preset.h` 的 `PRESET_TC_RESISTANCE_KOHM` 配置，默认 **150 kΩ**，与旧公式等价。
+- 100~400°C 七点校准可生成 10 点查表，校准表优先于默认公式。
 - 温度平滑：热电偶约 2 Hz 一阶低通，NTC 约 1.6 Hz 一阶低通；ADC 无效/NTC 故障时滤波器重新初始化。
 - 加热器保护：热电偶开路/短路、30 s 不升温、温度突变、严重失温、>500°C、温度数据无效、持续 100% 满功率 30 s；保护检测 1 kHz，故障锁存后下一拍立即切断 PWM。
 - 热上电保护屏蔽：上电前 **5 s** 不判断温度突变和过温，避免热烙铁上电建立过程误报；5 s 后恢复检测。
@@ -956,7 +958,7 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **53624 B（52.4 KiB）**，RAM 约 **14164 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
+- 当前 Flash 约 **53680 B（52.4 KiB）**，RAM 约 **14164 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒
@@ -969,5 +971,5 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 按键手动休眠后 **30 秒内屏蔽震动唤醒**，30 秒后恢复。
 - 按键、菜单、Boost 会清零低功率累计。
 - CH224A 默认地址 0x22/0x23 自动探测，电压寄存器 0x0A；如果模块地址或寄存器不同，修改 `powermanagement.h` 的 `POWER_CH224A_*`。
-- 热电偶默认使用 `T=-1.1948e-6*N^2+0.19073*N+23.78`，上板后优先用 `SYSTEM -> TIP CAL` 做 100~400°C 七点校准；也可在 `TEMPERATURE -> TEMP CAL` 手动录入 10 点 `ADC/温度` 并打开 `CAL ENABLE`。
+- 热电偶默认使用 `x=240*N/(1+a)`、`T=-4.73e-7*x^2+0.12*x+23.78`，热端电阻 `a` 由 preset.h 配置，默认 150 kΩ；上板后优先用 `SYSTEM -> TIP CAL` 做七点校准。
 - 保护阈值集中在 `src/verifyheater.c` 顶部宏，按实际加热器调整。

@@ -117,8 +117,9 @@ void temp_init(void)
  * 该式在冷端约 23.78°C 时拟合得到；运行时按当前冷端与
  * TEMP_TC_POLY_REF_C 的差值做一阶冷端补偿。
  */
-#define TEMP_TC_POLY_A                  (-1.1948e-6f)
-#define TEMP_TC_POLY_B                  (0.19073f)
+#define TEMP_TC_SCALE                   (240.0f)
+#define TEMP_TC_QUAD                    (-4.73e-7f)
+#define TEMP_TC_LIN                     (0.12f)
 #define TEMP_TC_POLY_C                  (23.78f)
 #define TEMP_TC_POLY_REF_C              (23.78f)
 #define TEMP_TC_ZERO_ADC                (0.0f)
@@ -153,10 +154,13 @@ static uint8_t temp_tc_cal_initialized;
 float temp_thermocouple_default_celsius(uint16_t adc, float cold_junction_c)
 {
   float n = (float)adc;
+  float x;
   float tip_c;
 
-  tip_c = (TEMP_TC_POLY_A * n * n) +
-          (TEMP_TC_POLY_B * n) +
+  x = (TEMP_TC_SCALE * n) / (1.0f + g_preset_tc.resistance_kohm);
+
+  tip_c = (TEMP_TC_QUAD * x * x) +
+          (TEMP_TC_LIN * x) +
           TEMP_TC_POLY_C;
 
   /* 冷端补偿 + 可选的增益/偏移微调（默认 1.0 / 0.0） */
