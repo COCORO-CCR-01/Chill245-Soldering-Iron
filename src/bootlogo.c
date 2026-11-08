@@ -203,6 +203,8 @@ static void bootlogo_render(uint8_t dimmed)
   bootlogo_pb_t pb;
   uint16_t x;
   uint16_t y;
+  uint16_t tx;
+  uint16_t tw;
   uint16_t color;
   uint8_t index;
 
@@ -215,9 +217,10 @@ static void bootlogo_render(uint8_t dimmed)
   pb.have_low = 0U;
   pb.low_nibble = 0U;
 
-  display_set_window(0U, 0U, BOOTLOGO_WIDTH, BOOTLOGO_HEIGHT);
-  display_begin_pixel_stream();
-
+  /*
+   * 180° 旋转时整屏大窗口会回卷，按 32px 行块输出；
+   * RLE 仍按行顺序解码，不需要额外大缓冲。
+   */
   for(y = 0U; y < BOOTLOGO_HEIGHT; y++)
   {
     for(x = 0U; x < BOOTLOGO_WIDTH; x++)
@@ -228,10 +231,16 @@ static void bootlogo_render(uint8_t dimmed)
                          bootlogo_dim_color(color) : color;
     }
 
-    display_write_pixel_stream_raw(bootlogo_line, BOOTLOGO_WIDTH);
+    for(tx = 0U; tx < BOOTLOGO_WIDTH; tx += 32U)
+    {
+      tw = (uint16_t)((BOOTLOGO_WIDTH - tx) > 32U ?
+                      32U : (BOOTLOGO_WIDTH - tx));
+      display_set_window(tx, y, tw, 1U);
+      display_begin_pixel_stream();
+      display_write_pixel_stream_raw(&bootlogo_line[tx], tw);
+      display_end_pixel_stream();
+    }
   }
-
-  display_end_pixel_stream();
 }
 
 void bootlogo_render_dimmed(void)

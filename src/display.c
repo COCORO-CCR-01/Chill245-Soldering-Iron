@@ -132,10 +132,43 @@ static const uint8_t display_gamma_n[] =
 
 static uint8_t display_initialized;
 static uint8_t display_light_theme;
+static uint8_t display_flip_180;
+static int32_t display_x_offset = DISPLAY_X_OFFSET;
+static int32_t display_y_offset = DISPLAY_Y_OFFSET;
+
+static void display_cmd_data(uint8_t cmd, const uint8_t *data, uint16_t len);
 
 void display_set_light_theme(uint8_t light)
 {
   display_light_theme = (light != 0U) ? 1U : 0U;
+}
+
+void display_set_flip(uint8_t flip)
+{
+  uint8_t madctl;
+
+  if(display_initialized == 0U)
+  {
+    return;
+  }
+
+  display_flip_180 = (flip != 0U) ? 1U : 0U;
+
+  if(display_flip_180 != 0U)
+  {
+    /* 180°：MX|MV，对应翻转后的面板 margin */
+    madctl = 0x60U;
+    display_x_offset = 2;
+    display_y_offset = 28;
+  }
+  else
+  {
+    madctl = DISPLAY_MADCTL_VALUE;
+    display_x_offset = DISPLAY_X_OFFSET;
+    display_y_offset = DISPLAY_Y_OFFSET;
+  }
+
+  display_cmd_data(ST7735_MADCTL, &madctl, 1U);
 }
 
 static uint16_t display_theme_color(uint16_t color)
@@ -553,7 +586,7 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     h = (uint16_t)(DISPLAY_HEIGHT - y);
   }
 
-  x0s = (int32_t)x + DISPLAY_X_OFFSET;
+  x0s = (int32_t)x + display_x_offset;
   if(x0s < 0)
   {
     x0s = 0;
@@ -561,7 +594,7 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 
   /* 窗口宽度保持与调用方写入的像素数一致；负偏移只裁剪最左侧 */
   x1s = x0s + (int32_t)w - 1;
-  y0s = (int32_t)y + (int32_t)DISPLAY_Y_OFFSET;
+  y0s = (int32_t)y + display_y_offset;
   y1s = y0s + (int32_t)h - 1;
 
   data[0] = (uint8_t)((uint32_t)x0s >> 8);

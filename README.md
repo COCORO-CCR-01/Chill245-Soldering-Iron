@@ -175,11 +175,29 @@ HEATING        SLEEP ● 300s
   - `CHILL245`
   - `SOLDERING`
   - 作者 `COCORO-CCR-01`
-  - 版本 `Release-00.10.0100`
+  - 版本 `Release-00.15.0020`
   - `ISSUES WELCOME`
 - 任意按键返回 SYSTEM 列表
 - 版本和作者定义在 [version.h](include/version.h)
 - 二维码数据在 [about_qr.h](include/about_qr.h)
+
+### 屏幕方向 / 浅色模式 / 按键
+
+- `DISPLAY / UI -> ROTATE 180`：0/180° 旋转，支持左右手。
+  - 0°：MADCTL `0xA0`，偏移 (-2, 24)
+  - 180°：MADCTL `0x60`，偏移 (2, 28)
+  - 设置保存到 EEPROM，菜单关闭后立即应用。
+- 浅色模式使用独立默认配色：
+  - primary 深红
+  - secondary 深蓝
+  - tertiary 深灰
+  - quaternary 近黑
+  - quinary 近白
+  - 不依赖壁纸也有足够对比度。
+- PREV 与 MENU 的物理按键功能已交换：
+  - 原 PREV 位置的按键执行 MENU
+  - 原 MENU 位置的按键执行 PREV
+  - NEXT 不变
 
 ### 启动 Logo / 壁纸 / 主题色
 
@@ -213,6 +231,7 @@ HEATING        SLEEP ● 300s
 - 壁纸压暗到 8/16；温度数字改为近白色，正文使用近白 + 双向 1px 阴影，提高壁纸上的对比度。
 - 透明文字根据前景亮度自动选择近黑或近白阴影。
 - 壁纸解码到 RAM 的 4bpp 缓存（6400 B），脏刷新用 `wallpaper_blit()` 恢复局部背景，不再每 250 ms 全屏重画。
+- 180° 旋转下壁纸按 32×8 小块绘制，启动图按每行 32px 小块绘制，避免 MV/MX 大窗口在面板边界回卷造成倾斜拉伸。
 - 壁纸/启动图使用 **raw 像素流**，绕过暗/亮主题颜色映射，避免图片颜色被主题改写。
 - 面板存在红/蓝通道互换：`DISPLAY_SWAP_RB` 默认为 **1**，在 display.c 最底层把所有 RGB565 输出做 R/B 交换；MADCTL 仍保持 `0xA0`，不退回旧方向配置。
 - 默认三级色改为中性灰，避免默认界面标签变成绿色；透明文字阴影使用 0x0001 近黑，避免亮色主题把阴影映射成白色。
@@ -255,7 +274,7 @@ Device -> 'K'（失败返回 'E'）
 
 `data_len` 为实际 RLE 字节数，最后一包补 0 到 128 B；CRC32 只覆盖实际数据。
 
-壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **10**。
+壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **11**。
 
 ### 新版全屏主界面
 
@@ -784,7 +803,7 @@ SYSTEM
 - 蜂鸣器：PB5 / TMR3_CH2，非阻塞多音效；开机、按键、到温、休眠/深睡/关机、唤醒、故障、模式、菜单、整定和错误音；音量 0~100 可调。
 - 指示灯：PA6 / TMR3_CH1，运行时呼吸，待机/休眠慢闪，故障/HMS 快闪。
 - HMS：EEPROM 写失败、加热控制看门狗等不可恢复错误持续占用屏幕；设置可自检显示 ALL OK。
-- 参数保存：Flash 末尾 10 KB 中，前 2 KB 双扇区交替记录参数（CRC32 + commit），后 8 KB 存启动 Logo；菜单关闭/自动整定完成自动保存；支持恢复默认。
+- 参数保存：Flash 末尾 10 KB 中，前 2 KB 双扇区交替记录参数（CRC32 + commit），后 8 KB 存启动图/壁纸；菜单关闭/自动整定完成自动保存；恢复默认会同时擦除两个参数扇区和 8 KB 图片区。
 - 电源管理：PA2 电压换算（10k/1k 分压，VCC/11）、PB1 震动休眠、18~30V 保护、PB6/PB7 CH224A 电压诱骗（默认 20V）；欠压/过压时主界面显示 `V LOW` / `V HIGH`。
 
 ## 热电偶、消隐采样与热端校准
@@ -958,7 +977,7 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **53680 B（52.4 KiB）**，RAM 约 **14164 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
+- 当前 Flash 约 **54044 B（52.8 KiB）**，RAM 约 **14172 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒

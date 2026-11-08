@@ -77,6 +77,11 @@ void display_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 void display_set_light_theme(uint8_t light);
 
 /**
+  * @brief  0/180° 屏幕翻转，用于左右手
+  */
+void display_set_flip(uint8_t flip);
+
+/**
   * @brief  写入 RGB565 像素数组
   * @param  colors: 像素数组
   * @param  count: 像素数量

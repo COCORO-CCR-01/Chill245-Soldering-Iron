@@ -61,3 +61,12 @@ uint16_t appcolors_surface(void)
   /* Host Monet chooses a dark or light quinary together with contrasting text. */
   return app_colors[APP_COLOR_QUINARY];
 }
+
+void appcolors_apply_light_defaults(void)
+{
+  app_colors[APP_COLOR_PRIMARY]    = 0xB800U;  /* dark red */
+  app_colors[APP_COLOR_SECONDARY]  = 0x0010U;  /* dark blue */
+  app_colors[APP_COLOR_TERTIARY]   = 0x4208U;  /* dark gray */
+  app_colors[APP_COLOR_QUATERNARY] = 0x0001U;  /* near black */
+  app_colors[APP_COLOR_QUINARY]    = 0xFFFEU;  /* near white surface */
+}

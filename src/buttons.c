@@ -51,11 +51,13 @@ static uint8_t buttons_read_pressed(button_id_t button)
   switch(button)
   {
     case BUTTON_MENU:
-      level = gpio_input_data_bit_read(GPIOA, GPIO_PINS_15);
+      /* 与 PREV 交换物理位置 */
+      level = gpio_input_data_bit_read(GPIOB, GPIO_PINS_3);
       break;
 
     case BUTTON_PREV:
-      level = gpio_input_data_bit_read(GPIOB, GPIO_PINS_3);
+      /* 与 MENU 交换物理位置 */
+      level = gpio_input_data_bit_read(GPIOA, GPIO_PINS_15);
       break;
 
     case BUTTON_NEXT:

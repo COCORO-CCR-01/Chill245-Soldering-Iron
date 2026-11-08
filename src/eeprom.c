@@ -263,6 +263,7 @@ void eeprom_capture_current(void)
   float time_step_s = g_eeprom_params.time_step_s;
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
   uint8_t ui_light = g_eeprom_params.ui_light;
+  uint8_t display_flip = g_eeprom_params.display_flip;
   float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
   float quick_setpoint_save_s = g_eeprom_params.quick_setpoint_save_s;
 
@@ -276,6 +277,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.time_step_s = time_step_s;
   g_eeprom_params.maindash_alt = maindash_alt;
   g_eeprom_params.ui_light = ui_light;
+  g_eeprom_params.display_flip = display_flip;
   g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
   g_eeprom_params.quick_setpoint_save_s = quick_setpoint_save_s;
 
@@ -345,7 +347,12 @@ void eeprom_apply(void)
   sm_get_status(&status);
 
   display_set_light_theme(g_eeprom_params.ui_light);
+  display_set_flip(g_eeprom_params.display_flip);
   appcolors_set(g_eeprom_params.app_colors);
+  if(g_eeprom_params.ui_light != 0U)
+  {
+    appcolors_apply_light_defaults();
+  }
 
   /* 整定过程中不要改设定温度/PID/标定，避免破坏整定 */
   if(status.autotune_state != PID_AUTOTUNE_RUNNING)
@@ -456,6 +463,7 @@ void eeprom_init(void)
     g_eeprom_params.time_step_s = 5.0f;
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
+    g_eeprom_params.display_flip = 0U;
     g_eeprom_params.sleep_power_pct = 13.0f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;
@@ -666,6 +674,8 @@ void eeprom_factory_reset(void)
 {
   flash_status_type status0;
   flash_status_type status1;
+  flash_status_type status_logo = FLASH_OPERATE_DONE;
+  uint32_t logo_addr;
   uint32_t primask;
 
   heater_force_off();
@@ -680,7 +690,20 @@ void eeprom_factory_reset(void)
   status0 = flash_sector_erase(EEPROM_SECTOR0_ADDR);
   status1 = flash_sector_erase(EEPROM_SECTOR1_ADDR);
 
-  if((status0 != FLASH_OPERATE_DONE) || (status1 != FLASH_OPERATE_DONE))
+  /* 壁纸/启动图与参数区分开，恢复默认时必须一并擦除 */
+  for(logo_addr = BOOTLOGO_FLASH_ADDR;
+      logo_addr < (BOOTLOGO_FLASH_ADDR + BOOTLOGO_REGION_SIZE);
+      logo_addr += 1024UL)
+  {
+    flash_status_type s = flash_sector_erase(logo_addr);
+    if(s != FLASH_OPERATE_DONE)
+    {
+      status_logo = s;
+    }
+  }
+
+  if((status0 != FLASH_OPERATE_DONE) || (status1 != FLASH_OPERATE_DONE) ||
+     (status_logo != FLASH_OPERATE_DONE))
   {
     flash_flag_clear(FLASH_PRGMERR_FLAG | FLASH_EPPERR_FLAG);
   }
@@ -692,7 +715,8 @@ void eeprom_factory_reset(void)
     __enable_irq();
   }
 
-  if((status0 != FLASH_OPERATE_DONE) || (status1 != FLASH_OPERATE_DONE))
+  if((status0 != FLASH_OPERATE_DONE) || (status1 != FLASH_OPERATE_DONE) ||
+     (status_logo != FLASH_OPERATE_DONE))
   {
     eeprom_error = EEPROM_ERROR_WRITE;
     hms_set_fatal(HMS_CODE_EEPROM_WRITE);

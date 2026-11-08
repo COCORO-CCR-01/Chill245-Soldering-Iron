@@ -25,6 +25,9 @@ uint16_t appcolors_get(app_color_slot_t slot);
 /* 由五级色派生出的深色面板色，避免文字被壁纸遮挡 */
 uint16_t appcolors_surface(void);
 
+/* 浅色模式默认配色（无壁纸时也保持高对比） */
+void appcolors_apply_light_defaults(void);
+
 #ifdef __cplusplus
 }
 #endif

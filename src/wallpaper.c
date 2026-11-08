@@ -41,6 +41,10 @@ void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
   uint8_t index;
   uint16_t px;
   uint16_t py;
+  uint16_t tx;
+  uint16_t ty;
+  uint16_t tw;
+  uint16_t th;
 
   if((w == 0U) || (h == 0U) || (x >= 160U) || (y >= 80U))
   {
@@ -62,25 +66,40 @@ void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     return;
   }
 
-  display_set_window(x, y, w, h);
-  display_begin_pixel_stream();
-
-  for(row = 0U; row < h; row++)
+  /*
+   * 180° 旋转时，MADCTL 的 MV/MX 组合会让超大窗口在边界处回卷，
+   * 表现为壁纸倾斜/拉伸。按 32x8 小块绘制，和图表的小窗口路径一致。
+   */
+  for(ty = 0U; ty < h; ty += 8U)
   {
-    py = (uint16_t)(y + row);
-    for(col = 0U; col < w; col++)
+    th = (uint16_t)((h - ty) > 8U ? 8U : (h - ty));
+
+    for(tx = 0U; tx < w; tx += 32U)
     {
-      px = (uint16_t)(x + col);
-      bit = (uint16_t)(py * 160U + px);
-      index = wallpaper_packed[bit >> 1];
-      index = ((bit & 1U) == 0U) ? (uint8_t)(index >> 4) : (uint8_t)(index & 0x0FU);
-      wallpaper_line[col] = wallpaper_dim(wallpaper_palette[index]);
+      tw = (uint16_t)((w - tx) > 32U ? 32U : (w - tx));
+
+      display_set_window((uint16_t)(x + tx), (uint16_t)(y + ty), tw, th);
+      display_begin_pixel_stream();
+
+      for(row = 0U; row < th; row++)
+      {
+        py = (uint16_t)(y + ty + row);
+        for(col = 0U; col < tw; col++)
+        {
+          px = (uint16_t)(x + tx + col);
+          bit = (uint16_t)(py * 160U + px);
+          index = wallpaper_packed[bit >> 1];
+          index = ((bit & 1U) == 0U) ?
+                  (uint8_t)(index >> 4) : (uint8_t)(index & 0x0FU);
+          wallpaper_line[col] = wallpaper_dim(wallpaper_palette[index]);
+        }
+
+        display_write_pixel_stream_raw(wallpaper_line, tw);
+      }
+
+      display_end_pixel_stream();
     }
-
-    display_write_pixel_stream_raw(wallpaper_line, w);
   }
-
-  display_end_pixel_stream();
 }
 
 void wallpaper_draw(void)
