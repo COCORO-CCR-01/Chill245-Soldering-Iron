@@ -31,6 +31,7 @@
 #include "autoroll.h"
 #include "statemachine.h"
 #include "temp.h"
+#include "bootguard.h"
 
 #define AUTOROLL_INTERVAL_MS            (5000U)
 
@@ -143,6 +144,11 @@ static void main_adjust_setpoint(int8_t direction)
 
 static void main_buttons(button_id_t button, button_event_t event)
 {
+  if(bootguard_is_active() != 0U)
+  {
+    return;
+  }
+
   if((menu_is_open() != 0U) || (tempcal_is_active() != 0U))
   {
     return;
@@ -330,16 +336,10 @@ int main(void)
   eeprom_apply();
 
   bootlogo_init();
+  bootguard_init();
   if(hms_has_fatal() == 0U)
   {
     bootlogo_boot(g_eeprom_params.bootlogo_delay_s);
-  }
-
-  /* 参数和输入电压档位应用完成后再恢复加热；HMS 致命错误保持关闭 */
-  if((hms_has_fatal() == 0U) &&
-     (sm_get_state() != SM_STATE_AUTOTUNE))
-  {
-    (void)sm_set_heater_enabled(1U);
   }
 
   /* 主循环开始喂狗；控制中断停滞时会触发 HMS */
@@ -349,7 +349,7 @@ int main(void)
   buzzer_sync_state();
 
   /* 先把主界面画完，再播放开机音，避免首帧阻塞拉长提示音 */
-  if(hms_has_fatal() == 0U)
+  if((hms_has_fatal() == 0U) && (bootguard_is_active() == 0U))
   {
     sm_status_t boot_status;
     sm_get_status(&boot_status);
@@ -420,12 +420,20 @@ int main(void)
         menu_force_close();
       }
 
-      /* 保持背光，并确保致命错误时加热不会恢复 */
+      /* 保持背光，并确保故障时加热不会恢复 */
       power_wake();
 
-      if(hms_has_fatal() != 0U)
       {
-        (void)sm_set_heater_enabled(0U);
+        sm_status_t hms_status;
+        sm_get_status(&hms_status);
+        if((hms_has_fatal() != 0U) ||
+           (hms_status.fault != VERIFY_HEATER_FAULT_NONE) ||
+           (hms_status.state == SM_STATE_FAULT) ||
+           (power_get_fault() != POWER_FAULT_NONE))
+        {
+          bootguard_abort();
+          (void)sm_set_heater_enabled(0U);
+        }
       }
 
       hms_was_active = 1U;
@@ -435,6 +443,27 @@ int main(void)
       if(hms_was_active != 0U)
       {
         hms_was_active = 0U;
+        autoroll_request_redraw();
+      }
+
+      /*
+       * HMS 已让出屏幕后才处理开机联锁，保证 HMS 永远在最上层。
+       */
+      if(bootguard_is_active() != 0U)
+      {
+        sm_status_t guard_status;
+
+        power_notify_activity(now_ms);
+        bootguard_task(now_ms);
+
+        if(bootguard_is_active() != 0U)
+        {
+          wk_delay_ms(SM_SLOW_PERIOD_MS);
+          continue;
+        }
+
+        sm_get_status(&guard_status);
+        maindash_draw(&guard_status);
         autoroll_request_redraw();
       }
 

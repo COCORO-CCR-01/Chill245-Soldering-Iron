@@ -264,6 +264,8 @@ void eeprom_capture_current(void)
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
   uint8_t ui_light = g_eeprom_params.ui_light;
   uint8_t display_flip = g_eeprom_params.display_flip;
+  uint8_t boot_hold_enabled = g_eeprom_params.boot_hold_enabled;
+  float boot_high_temp_c = g_eeprom_params.boot_high_temp_c;
   float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
   float quick_setpoint_save_s = g_eeprom_params.quick_setpoint_save_s;
 
@@ -278,6 +280,8 @@ void eeprom_capture_current(void)
   g_eeprom_params.maindash_alt = maindash_alt;
   g_eeprom_params.ui_light = ui_light;
   g_eeprom_params.display_flip = display_flip;
+  g_eeprom_params.boot_hold_enabled = boot_hold_enabled;
+  g_eeprom_params.boot_high_temp_c = boot_high_temp_c;
   g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
   g_eeprom_params.quick_setpoint_save_s = quick_setpoint_save_s;
 
@@ -464,6 +468,8 @@ void eeprom_init(void)
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
     g_eeprom_params.display_flip = 0U;
+    g_eeprom_params.boot_hold_enabled = 1U;
+    g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;

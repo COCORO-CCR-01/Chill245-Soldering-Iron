@@ -5,6 +5,7 @@ const preset_tc_config_t g_preset_tc =
   PRESET_TC_RESISTANCE_KOHM
 };
 
+
 const preset_ntc_config_t g_preset_ntc =
 {
   PRESET_NTC_R25_OHM,

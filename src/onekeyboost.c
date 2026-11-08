@@ -12,6 +12,7 @@
 
 #include "onekeyboost.h"
 #include "eeprom.h"
+#include "bootguard.h"
 #include "statemachine.h"
 #include "powermanagement.h"
 #include "menu.h"

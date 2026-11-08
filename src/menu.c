@@ -19,6 +19,7 @@
 #include "appcolors.h"
 #include "about_qr.h"
 #include "version.h"
+#include "bootguard.h"
 #include "statemachine.h"
 #include "pid.h"
 #include "temp.h"
@@ -236,6 +237,8 @@ static const menu_item_t menu_system_items[] =
   { "HEATER ON/OFF",  MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_heater_toggle },
   { "CLEAR FAULT",    MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_clear_fault },
   { "HMS SELF TEST",  MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_hms },
+  { "HIGH TEMP C",   MENU_ITEM_FLOAT,  &menu_config.boot_high_temp_c, NULL, NULL, 0, 10.0f, 100.0f, 450.0f, 0U, "C", NULL },
+  { "BOOT HOLD",     MENU_ITEM_BOOL,   &menu_config.boot_hold_enabled, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "TIP CAL",        MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_tip_cal },
   { "DEFAULTS",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_defaults },
   { "ABOUT",          MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_about },
@@ -1481,6 +1484,11 @@ static void menu_draw(void)
 
 static void menu_on_button(button_id_t button, button_event_t event)
 {
+  if(bootguard_is_active() != 0U)
+  {
+    return;
+  }
+
   if(event == BUTTON_EVENT_DOUBLE_CLICK)
   {
     if((button == BUTTON_MENU) && (menu_open_flag == 0U))

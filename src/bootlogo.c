@@ -183,20 +183,8 @@ static uint8_t bootlogo_pb_nibble(bootlogo_pb_t *pb)
   return (uint8_t)(value >> 4);
 }
 
-static uint16_t bootlogo_dim_color(uint16_t color)
-{
-  uint16_t r = (uint16_t)((color >> 11) & 0x1FU);
-  uint16_t g = (uint16_t)((color >> 5) & 0x3FU);
-  uint16_t b = (uint16_t)(color & 0x1FU);
 
-  r = (uint16_t)((r * 8U) / 16U);
-  g = (uint16_t)((g * 8U) / 16U);
-  b = (uint16_t)((b * 8U) / 16U);
-
-  return (uint16_t)((r << 11) | (g << 5) | b);
-}
-
-static void bootlogo_render(uint8_t dimmed)
+static void bootlogo_render(void)
 {
   const bootlogo_header_t *header =
     (const bootlogo_header_t *)BOOTLOGO_FLASH_ADDR;
@@ -227,8 +215,7 @@ static void bootlogo_render(uint8_t dimmed)
     {
       index = bootlogo_pb_nibble(&pb);
       color = header->palette[index & 0x0FU];
-      bootlogo_line[x] = (dimmed != 0U) ?
-                         bootlogo_dim_color(color) : color;
+      bootlogo_line[x] = color;
     }
 
     for(tx = 0U; tx < BOOTLOGO_WIDTH; tx += 32U)
@@ -243,13 +230,6 @@ static void bootlogo_render(uint8_t dimmed)
   }
 }
 
-void bootlogo_render_dimmed(void)
-{
-  if(bootlogo_is_valid() != 0U)
-  {
-    bootlogo_render(1U);
-  }
-}
 
 uint8_t bootlogo_copy_image(uint8_t *packed, uint16_t packed_len,
                             uint16_t palette[16])
@@ -307,7 +287,7 @@ void bootlogo_boot(float delay_s)
     delay_ms = 10000U;
   }
 
-  bootlogo_render(0U);
+  bootlogo_render();
 
   for(elapsed = 0U; elapsed < delay_ms; elapsed += 50U)
   {

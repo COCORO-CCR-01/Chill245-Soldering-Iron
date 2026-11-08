@@ -4,7 +4,7 @@
 **  File        : AT32F421x8_FLASH.ld
 **
 **  Abstract    : Linker script for AT32F421x8 Device with
-**                54KByte FLASH (last 10K reserved for settings and boot logo), 16KByte RAM
+**                55KByte FLASH (last 9K reserved for settings and boot logo), 16KByte RAM
 **
 **                Set heap size, stack size and stack location according
 **                to application requirements.
@@ -30,7 +30,7 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 54K
+FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 55K
 RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 16K
 }
 

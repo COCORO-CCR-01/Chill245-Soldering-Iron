@@ -17,12 +17,12 @@ extern "C" {
  * 链接脚本 AT32F421x8_62K.ld 把程序区限制为 62 KB，
  * 避免代码/常量占用这两个参数扇区。
  */
-#define EEPROM_FLASH_BASE               (0x0800D800UL)
+#define EEPROM_FLASH_BASE               (0x0800DC00UL)
 #define EEPROM_SECTOR_SIZE              (1024UL)
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x000BU)
+#define EEPROM_FORMAT_VERSION           (0x000CU)
 
 /**
   * @brief  所有掉电保存参数
@@ -59,6 +59,8 @@ typedef struct
   uint8_t maindash_alt;
   uint8_t ui_light;
   uint8_t display_flip;
+  uint8_t boot_hold_enabled;
+  float boot_high_temp_c;
 
   float autoroll_s;
   uint8_t autoroll_enabled;

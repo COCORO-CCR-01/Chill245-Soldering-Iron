@@ -48,7 +48,7 @@ pio run -t upload       # 烧录（板级默认 atlink，可在 platformio.ini �
 .pio/build/genericAT32F421G8U7/firmware.bin
 ```
 
-> `platformio.ini` 使用 `board_build.ldscript = linker/AT32F421x8_62K.ld`，程序区 **54 KB**，最后 **10 KB** 留给参数区和启动 Logo（2 KB 双扇区参数 + 8 KB Logo）。
+> `platformio.ini` 使用 `board_build.ldscript = linker/AT32F421x8_62K.ld`，程序区 **55 KB**，最后 **9 KB** 留给参数区和启动 Logo（2 KB 双扇区参数 + 7 KB Logo）。
 >
 > 全局编译使用 `-Os + -flto` 节省 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制路径速度。
 
@@ -175,7 +175,7 @@ HEATING        SLEEP ● 300s
   - `CHILL245`
   - `SOLDERING`
   - 作者 `COCORO-CCR-01`
-  - 版本 `Release-00.15.0020`
+  - 版本 `Release-01.01.1000`
   - `ISSUES WELCOME`
 - 任意按键返回 SYSTEM 列表
 - 版本和作者定义在 [version.h](include/version.h)
@@ -201,16 +201,16 @@ HEATING        SLEEP ● 300s
 
 ### 启动 Logo / 壁纸 / 主题色
 
-启动图与 maindash 壁纸共用 Flash 末尾同一张 8 KB 图片；上传壁纸也会更新启动图。
+启动图与 maindash 壁纸共用 Flash 末尾同一张 7 KB 图片；上传壁纸也会更新启动图。
 
 ```text
-0x0800D800 ~ 0x0800DBFF   参数记录 0（1 KB 扇区）
-0x0800DC00 ~ 0x0800DFFF   参数记录 1（1 KB 扇区）
-0x0800E000 ~ 0x0800FFFF   启动图 / 壁纸（8 KB）
+0x0800DC00 ~ 0x0800DFFF   参数记录 0（1 KB 扇区）
+0x0800E000 ~ 0x0800E3FF   参数记录 1（1 KB 扇区）
+0x0800E400 ~ 0x0800FFFF   启动图 / 壁纸（7 KB）
 ```
 
 - 分辨率固定 **160×80**，**16 色**，4bpp 打包后 6400 B。
-- 使用 PackBits RLE 压缩，数据上限 **8064 B**；最坏随机图约 6450 B，仍有容量余量。
+- 使用 PackBits RLE 压缩，数据上限 **7100 B**；最坏随机图约 6450 B，仍有容量余量。
 - 每张图片包含 16 色 RGB565 调色板和 CRC32。
 - 没有有效图片时 `bootlogo_is_valid()` / `wallpaper_is_available()` 返回 0，开机不显示，菜单延时设置也不会生效。
 - 菜单 `DISPLAY / UI -> BOOT LOGO` 设置开机显示秒数，范围 0~10 s，默认 0；设置值不会再被图片校验/参数保存清零。
@@ -249,7 +249,7 @@ HEATING        SLEEP ● 300s
   - **壁纸 + 主题色**：默认用类似 Monet 的方式从壁纸提取五级色，也可逐级自定义。
   - **仅启动 Logo**：只更新图片，不改主题色。
 - USB-TTL 接 `PA9`（TX）、`PA10`（RX）、`GND`，115200 8N1。
-- 上传会擦除 8 KB Logo 区，期间强制关闭加热；完成后恢复。
+- 上传会擦除 7 KB Logo 区，期间强制关闭加热；完成后恢复。
 
 #### 上传协议
 
@@ -274,7 +274,7 @@ Device -> 'K'（失败返回 'E'）
 
 `data_len` 为实际 RLE 字节数，最后一包补 0 到 128 B；CRC32 只覆盖实际数据。
 
-壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **11**。
+壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **12**。
 
 ### 新版全屏主界面
 
@@ -377,7 +377,7 @@ sector 62: 0x0800F800 ~ 0x0800FBFF
 sector 63: 0x0800FC00 ~ 0x0800FFFF
 ```
 
-- 自定义链接脚本 [AT32F421x8_62K.ld](linker/AT32F421x8_62K.ld:1) 把程序区限制为 **54 KB**
+- 自定义链接脚本 [AT32F421x8_62K.ld](linker/AT32F421x8_62K.ld:1) 把程序区限制为 **55 KB**
 - 双扇区交替写入，始终保留上一份有效记录
 - 记录包含 `magic + version + size + sequence + CRC32 + commit`
 - 写入前 `heater_force_off()`，并短暂关闭中断，避免 Flash 操作期间加热
@@ -504,6 +504,18 @@ VCC   = V-ADC * 11
 ## 电源管理
 
 [powermanagement.c](src/powermanagement.c:1) 负责输入电压、震动休眠、电源保护和 CH224A。
+
+### 开机联锁
+
+- **高温联锁（强制）**：开机热端温度高于 `HIGH TEMP C` 时禁止加热，全屏显示温度过高，必须等温度降到阈值以下后按任意键恢复。
+  - 默认阈值 **300°C**
+  - 菜单 `SYSTEM -> HIGH TEMP C` 可改，范围 100~450°C
+- **开机等 NEXT（可选）**：开机不加热，全屏提示 `PRESS NEXT TO START HEATING`，按 NEXT 后恢复。
+  - 菜单 `SYSTEM -> BOOT HOLD` 开关
+  - 默认开启
+- 两套提示都覆盖新版和旧版 maindash。
+- 联锁期间禁用菜单、Boost、快调温等按键逻辑，只响应恢复条件。
+- 恢复后自动回到 maindash。
 
 ### 自动休眠/关机
 
@@ -803,7 +815,7 @@ SYSTEM
 - 蜂鸣器：PB5 / TMR3_CH2，非阻塞多音效；开机、按键、到温、休眠/深睡/关机、唤醒、故障、模式、菜单、整定和错误音；音量 0~100 可调。
 - 指示灯：PA6 / TMR3_CH1，运行时呼吸，待机/休眠慢闪，故障/HMS 快闪。
 - HMS：EEPROM 写失败、加热控制看门狗等不可恢复错误持续占用屏幕；设置可自检显示 ALL OK。
-- 参数保存：Flash 末尾 10 KB 中，前 2 KB 双扇区交替记录参数（CRC32 + commit），后 8 KB 存启动图/壁纸；菜单关闭/自动整定完成自动保存；恢复默认会同时擦除两个参数扇区和 8 KB 图片区。
+- 参数保存：Flash 末尾 9 KB 中，前 2 KB 双扇区交替记录参数（CRC32 + commit），后 7 KB 存启动图/壁纸；菜单关闭/自动整定完成自动保存；恢复默认会同时擦除两个参数扇区和 7 KB 图片区。
 - 电源管理：PA2 电压换算（10k/1k 分压，VCC/11）、PB1 震动休眠、18~30V 保护、PB6/PB7 CH224A 电压诱骗（默认 20V）；欠压/过压时主界面显示 `V LOW` / `V HIGH`。
 
 ## 热电偶、消隐采样与热端校准
@@ -832,6 +844,37 @@ phase 11 .. 199: 保持 PWM
 - 温度采样和 PID 更新为 **200 Hz**
 - 每个 5 ms 周期最大有效加热占空比约 90%
 - 自动整定同样以 200 Hz 推进
+
+### 热电偶开路判定
+
+不再用 PA1 接近满量程的固定 ADC 阈值，改为按 R7 对应的理论失效温度查表。
+
+- R7 与失效温度都在 `include/preset.h`。
+- 表内容作为注释保留，实际只启用一个值：`PRESET_TC_OPEN_TEMP_C`。
+- 默认 R7 150 kΩ，理论值 784.8°C，实际保护点提前 50°C：`734.8f`。
+- 换 R7 时按理论值减 50 后只改这一个宏，不需要改查表代码。
+- 使用**未滤波的瞬时热电偶温度**比较，50 ms 去抖后锁存 `TC OPEN`。
+- 这样开路跳变会先于 `OVERTEMP` / `TEMP JUMP` 报出，不会被滤波滞后掩盖。
+- 任意保护故障会常驻全屏 HMS，不再自动消失；HMS 优先级高于 maindash、菜单和开机联锁。
+- HMS 顶栏分两行排布，参数统一 2 倍字体：
+  - 第一行：`ERR`、`VIN 20V`、`COLD 25C`
+  - 第二行：`NOW 250C`、`SET 300C`
+- 输入电压取整数 V 以适配 2 倍字体；热端、设定、冷端均为整数 °C。
+- 中间用 2 倍字体显示完整故障：
+  - `HOTEND SENSOR OPEN`
+  - `HOTEND SENSOR SHORT`
+  - `TEMP INVALID`
+  - `TEMP NO RISE`
+  - `TEMP JUMP`
+  - `TEMP DROP`
+  - `OVER TEMPERATURE`
+  - `FULL POWER`
+  - `INPUT UNDERVOLTAGE`
+  - `INPUT OVERVOLTAGE`
+  - `SYSTEM ERROR`
+- 最底下固定显示 `PRESS MENU TO RETRY`，2 倍字体。
+- maindash 不再显示具体故障，只显示 `ERR`；故障详情统一由全屏 HMS 展示。
+- 故障页按 MENU 重试：清除锁存故障、重新使能加热。
 
 ### 热端校准
 
@@ -977,7 +1020,7 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **54044 B（52.8 KiB）**，RAM 约 **14172 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
+- 当前 Flash 约 **55520 B（54.2 KiB）**，RAM 约 **14192 B**（壁纸 4bpp 缓存 6400 B），程序区 55 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒

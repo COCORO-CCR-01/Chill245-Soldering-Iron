@@ -21,13 +21,14 @@
 
 #include "verifyheater.h"
 #include "at32f421.h"
+#include "preset.h"
+#include "temp.h"
 #include <stddef.h>
 #include <string.h>
 
 /* ============================ 保护参数 ============================ */
-/* 热电偶开路：PA1 接近满量程，持续 200ms */
-#define VERIFY_TC_OPEN_ADC_THRESHOLD        (4090U)
-#define VERIFY_TC_OPEN_DEBOUNCE_MS          (200U)
+/* 热电偶开路：温度达到 R7 对应理论失效温度，持续 200ms */
+#define VERIFY_TC_OPEN_DEBOUNCE_MS          (50U)
 
 /* 热电偶短路：烙铁头曾经热过（>=60°C）后，PA1 回到运放零点，
    且加热功率 >= 30%，持续 100ms。
@@ -301,19 +302,28 @@ void verifyheater_update(const temp_data_t *temp,
     verifyheater_state.full_power_start_ms = 0U;
   }
 
-  /* 1. 热电偶开路：PA1 接近满量程 */
+  /* 1. 热电偶开路：温度 >= R7 对应理论失效温度 */
   open_cond = 0U;
 
-  if((adc_raw->valid != 0U) &&
-     (adc_raw->thermocouple >= VERIFY_TC_OPEN_ADC_THRESHOLD))
+  if((adc_raw->valid != 0U) && (temp->valid != 0U))
   {
-    open_cond = 1U;
-    verifyheater_state.open_ms += dt_ms;
-
-    if(verifyheater_state.open_ms >= VERIFY_TC_OPEN_DEBOUNCE_MS)
+    /* 用未滤波的瞬时热电偶温度，避免滤波滞后让 OVERTEMP 抢先锁存 */
+    if(temp_thermocouple_default_celsius(adc_raw->thermocouple,
+                                         temp->room_c) >=
+       PRESET_TC_OPEN_TEMP_C)
     {
-      verifyheater_latch(VERIFY_HEATER_FAULT_TC_OPEN);
-      return;
+      open_cond = 1U;
+      verifyheater_state.open_ms += dt_ms;
+
+      if(verifyheater_state.open_ms >= VERIFY_TC_OPEN_DEBOUNCE_MS)
+      {
+        verifyheater_latch(VERIFY_HEATER_FAULT_TC_OPEN);
+        return;
+      }
+    }
+    else
+    {
+      verifyheater_state.open_ms = 0U;
     }
   }
   else

@@ -7,11 +7,11 @@ extern "C" {
 
 #include <stdint.h>
 
-#define BOOTLOGO_FLASH_ADDR       (0x0800E000UL)
-#define BOOTLOGO_REGION_SIZE      (8192UL)
+#define BOOTLOGO_FLASH_ADDR       (0x0800E400UL)
+#define BOOTLOGO_REGION_SIZE      (7168UL)
 #define BOOTLOGO_HEADER_SIZE      (64UL)
 #define BOOTLOGO_DATA_OFFSET      (BOOTLOGO_HEADER_SIZE)
-#define BOOTLOGO_MAX_DATA         (8064UL)
+#define BOOTLOGO_MAX_DATA         (7100UL)
 #define BOOTLOGO_WIDTH            (160U)
 #define BOOTLOGO_HEIGHT           (80U)
 
@@ -34,10 +34,7 @@ uint8_t bootlogo_is_valid(void);
   */
 void bootlogo_boot(float delay_s);
 
-/**
-  * @brief  把已存储的图片以压暗方式画到全屏，作为 maindash 壁纸
-  */
-void bootlogo_render_dimmed(void);
+
 
 /**
   * @brief  把图片解码成 4bpp 打包数据（6400 B）并复制调色板
