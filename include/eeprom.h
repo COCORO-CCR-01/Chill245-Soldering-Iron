@@ -22,7 +22,7 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x0009U)
+#define EEPROM_FORMAT_VERSION           (0x000AU)
 
 /**
   * @brief  所有掉电保存参数
@@ -31,6 +31,7 @@ extern "C" {
 typedef struct
 {
   float setpoint_c;
+  float quick_setpoint_save_s;
   uint8_t pid_mode;
   pid_curve_t standard_curve;
   pid_custom_point_t custom_points[PID_CUSTOM_POINTS];

@@ -221,6 +221,8 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
   if((params->stationary_s < 1.0f) ||
      (params->sleep_power_pct < 0.0f) ||
      (params->sleep_power_pct > 100.0f) ||
+     (params->quick_setpoint_save_s < 1.0f) ||
+     (params->quick_setpoint_save_s > 600.0f) ||
      (params->bootlogo_delay_s < 0.0f) ||
      (params->bootlogo_delay_s > 10.0f) ||
      (params->reduced_off_s < 1.0f) ||
@@ -262,6 +264,7 @@ void eeprom_capture_current(void)
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
   uint8_t ui_light = g_eeprom_params.ui_light;
   float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
+  float quick_setpoint_save_s = g_eeprom_params.quick_setpoint_save_s;
 
   memset(&g_eeprom_params, 0, sizeof(g_eeprom_params));
 
@@ -274,6 +277,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.maindash_alt = maindash_alt;
   g_eeprom_params.ui_light = ui_light;
   g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
+  g_eeprom_params.quick_setpoint_save_s = quick_setpoint_save_s;
 
   g_eeprom_params.setpoint_c = sm_get_setpoint();
   g_eeprom_params.pid_mode = (uint8_t)sm_get_pid_mode();
@@ -454,6 +458,7 @@ void eeprom_init(void)
     g_eeprom_params.ui_light = 0U;
     g_eeprom_params.sleep_power_pct = 13.0f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
+    g_eeprom_params.quick_setpoint_save_s = 30.0f;
     g_eeprom_params.app_colors[0] = 0xFC9FU;
     g_eeprom_params.app_colors[1] = 0x05FFU;
     g_eeprom_params.app_colors[2] = 0x9CF3U;

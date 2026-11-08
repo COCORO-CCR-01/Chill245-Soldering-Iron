@@ -162,6 +162,7 @@ static float menu_item_step(const menu_item_t *item);
 static const menu_item_t menu_temperature_items[] =
 {
   { "SETPOINT",     MENU_ITEM_FLOAT,  &menu_config.setpoint_c,       NULL, NULL, 0, 5.0f,   0.0f,  450.0f, 0U, "C",  NULL },
+  { "QUICK SAVE",   MENU_ITEM_FLOAT,  &menu_config.quick_setpoint_save_s, NULL, NULL, 0, 5.0f, 5.0f, 600.0f, 0U, "s", NULL },
   { "PID MODE",     MENU_ITEM_ENUM,   &menu_config.pid_mode,         NULL, menu_pid_mode_options, 3U, 1.0f, 0.0f, 2.0f, 0U, "", NULL },
   { "KP",           MENU_ITEM_FLOAT,  &menu_config.standard_curve.kp, NULL, NULL, 0, 0.05f,  0.0f,  10.0f,  2U, "",   NULL },
   { "KI",           MENU_ITEM_FLOAT,  &menu_config.standard_curve.ki, NULL, NULL, 0, 0.005f, 0.0f,  5.0f,   3U, "",   NULL },

@@ -10,6 +10,11 @@ extern "C" {
 
 #define TEMP_TC_CAL_POINTS              (10U)
 
+/**
+  * @brief  按 preset.h 的参数生成冷端 NTC 动态查表
+  */
+void temp_init(void);
+
 typedef struct
 {
   uint16_t adc;      /* PA1 / T-ADC 原始值 */

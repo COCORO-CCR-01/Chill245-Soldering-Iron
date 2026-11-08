@@ -30,6 +30,7 @@
 #include "graph.h"
 #include "autoroll.h"
 #include "statemachine.h"
+#include "temp.h"
 
 #define AUTOROLL_INTERVAL_MS            (5000U)
 
@@ -43,6 +44,74 @@ static void boot_wdt_relax(void)
   wdt_divider_set(WDT_CLK_DIV_64);
   wdt_reload_value_set(2499U);
   wdt_counter_reload();
+}
+
+/* 快速调温记忆：最后一次调节后保持 N 秒再写入 EEPROM */
+static uint32_t quick_setpoint_due_ms;
+static uint8_t quick_setpoint_pending;
+
+static void main_quick_setpoint_arm(uint32_t now_ms)
+{
+  float hold_s = g_eeprom_params.quick_setpoint_save_s;
+
+  if(hold_s < 1.0f)
+  {
+    hold_s = 30.0f;
+  }
+  if(hold_s > 600.0f)
+  {
+    hold_s = 600.0f;
+  }
+
+  quick_setpoint_due_ms = now_ms + (uint32_t)((hold_s * 1000.0f) + 0.5f);
+  quick_setpoint_pending = 1U;
+}
+
+static void main_quick_setpoint_task(uint32_t now_ms)
+{
+  sm_status_t status;
+  float setpoint;
+  float diff;
+
+  if(quick_setpoint_pending == 0U)
+  {
+    return;
+  }
+  if((int32_t)(quick_setpoint_due_ms - now_ms) > 0)
+  {
+    return;
+  }
+  if((menu_is_open() != 0U) || (onekeyboost_is_active() != 0U))
+  {
+    return;
+  }
+
+  sm_get_status(&status);
+  if(status.autotune_state == PID_AUTOTUNE_RUNNING)
+  {
+    return;
+  }
+
+  setpoint = sm_get_setpoint();
+  diff = setpoint - g_eeprom_params.setpoint_c;
+  if(diff < 0.0f)
+  {
+    diff = -diff;
+  }
+
+  if(diff >= 0.05f)
+  {
+    float old_setpoint = g_eeprom_params.setpoint_c;
+    g_eeprom_params.setpoint_c = setpoint;
+    if(eeprom_save() == 0U)
+    {
+      g_eeprom_params.setpoint_c = old_setpoint;
+      quick_setpoint_due_ms = now_ms + 1000U;
+      return;
+    }
+  }
+
+  quick_setpoint_pending = 0U;
 }
 
 /* 非菜单界面按键仲裁 */
@@ -66,6 +135,7 @@ static void main_adjust_setpoint(int8_t direction)
   if(sm_set_setpoint(setpoint) != 0U)
   {
     maindash_notify_setpoint_adjusted();
+    main_quick_setpoint_arm(sm_get_uptime_ms());
     power_notify_activity(sm_get_uptime_ms());
     buzzer_play(BUZZER_SOUND_KEY);
   }
@@ -231,6 +301,9 @@ int main(void)
   autoroll_init(AUTOROLL_INTERVAL_MS);
 
   /* 初始化所有模块并启动 20 kHz 控制定时器 */
+  /* 按 preset.h 生成冷端 NTC 动态查表 */
+  temp_init();
+
   sm_init();
 
   /* 参数加载完成前先关加热；若启用了上电自动整定则保留整定状态 */
@@ -316,6 +389,9 @@ int main(void)
 
     /* 震动休眠、电压保护、输入电压更新 */
     power_update(now_ms);
+
+    /* 快速调温保持 N 秒后写入 EEPROM */
+    main_quick_setpoint_task(now_ms);
 
     /* 启动图上传：收到上位机命令时阻塞接收并写 Flash */
     if(bootlogo_poll() != 0U)

@@ -19,104 +19,91 @@
 #include <stddef.h>
 
 /* ============================== NTC 参数 ============================== */
-/* R25、B 值仅用于离线生成下方查表，运行时直接查表插值 */
-#define TEMP_NTC_R25_OHM                (100000.0f)
-#define TEMP_NTC_BETA                   (3950.0f)
-#define TEMP_NTC_SERIES_OHM             (10000.0f)
+/*
+ * 冷端 NTC 参数来自 preset.h。
+ * 开机时用 Beta 方程动态生成温度-电阻表，替代写死的常量表：
+ *   R(T) = R25 * exp(B * (1/T - 1/T25))
+ * 修改 NTC 后在 preset.h 中填写并重新编译。
+ */
+#include "preset.h"
+
 #define TEMP_ADC_FULL_SCALE             (4095.0f)
 
-/*
- * NTC 分压拓扑：
- *   1 = 10kΩ 上拉到 VREF，NTC 下拉到 GND（默认，常见接法）
- *   0 = NTC 上拉到 VREF，10kΩ 下拉到 GND
- * 如果实际电路与默认相反，只需把这里改成 0。
- */
-#define TEMP_NTC_CONNECT_TO_GND         (1)
+#define TEMP_NTC_TABLE_MIN_C            PRESET_NTC_TABLE_MIN_C
+#define TEMP_NTC_TABLE_STEP_C           PRESET_NTC_TABLE_STEP_C
+#define TEMP_NTC_TABLE_POINTS           PRESET_NTC_TABLE_POINTS
 
-/*
- * NTC 温度-电阻表：
- *   由 Beta 方程 R(T) = R25 * exp(B * (1/T - 1/T25)) 离线生成，
- *   温度范围 -20~100°C，步进 2°C，运行时做线性插值。
- *   表项为 NTC 电阻值，单位 Ω。
- */
-#define TEMP_NTC_TABLE_MIN_C            (-20.0f)
-#define TEMP_NTC_TABLE_STEP_C           (2.0f)
-#define TEMP_NTC_TABLE_POINTS           (61U)
+static float temp_ntc_table[TEMP_NTC_TABLE_POINTS];
+static uint8_t temp_ntc_table_ready;
 
-static const float temp_ntc_table[TEMP_NTC_TABLE_POINTS] =
+_Static_assert(PRESET_NTC_TABLE_POINTS >= 2U, "NTC table too short");
+
+static float temp_expf(float x)
 {
-  1053846.90f,   /* -20 C */
-  932523.94f,   /* -18 C */
-  826739.54f,   /* -16 C */
-  734318.62f,   /* -14 C */
-  653414.78f,   /* -12 C */
-  582457.13f,   /* -10 C */
-  520106.32f,   /*  -8 C */
-  465218.03f,   /*  -6 C */
-  416812.55f,   /*  -4 C */
-  374049.37f,   /*  -2 C */
-  336206.04f,   /*   0 C */
-  302660.34f,   /*   2 C */
-  272875.40f,   /*   4 C */
-  246387.08f,   /*   6 C */
-  222793.44f,   /*   8 C */
-  201745.77f,   /*  10 C */
-  182941.00f,   /*  12 C */
-  166115.28f,   /*  14 C */
-  151038.53f,   /*  16 C */
-  137509.80f,   /*  18 C */
-  125353.26f,   /*  20 C */
-  114414.85f,   /*  22 C */
-  104559.36f,   /*  24 C */
-   95667.96f,   /*  26 C */
-   87636.05f,   /*  28 C */
-   80371.41f,   /*  30 C */
-   73792.63f,   /*  32 C */
-   67827.74f,   /*  34 C */
-   62413.05f,   /*  36 C */
-   57492.07f,   /*  38 C */
-   53014.67f,   /*  40 C */
-   48936.30f,   /*  42 C */
-   45217.30f,   /*  44 C */
-   41822.34f,   /*  46 C */
-   38719.90f,   /*  48 C */
-   35881.83f,   /*  50 C */
-   33282.93f,   /*  52 C */
-   30900.66f,   /*  54 C */
-   28714.81f,   /*  56 C */
-   26707.24f,   /*  58 C */
-   24861.65f,   /*  60 C */
-   23163.39f,   /*  62 C */
-   21599.25f,   /*  64 C */
-   20157.36f,   /*  66 C */
-   18826.96f,   /*  68 C */
-   17598.37f,   /*  70 C */
-   16462.83f,   /*  72 C */
-   15412.39f,   /*  74 C */
-   14439.89f,   /*  76 C */
-   13538.80f,   /*  78 C */
-   12703.20f,   /*  80 C */
-   11927.74f,   /*  82 C */
-   11207.51f,   /*  84 C */
-   10538.08f,   /*  86 C */
-    9915.40f,   /*  88 C */
-    9335.77f,   /*  90 C */
-    8795.83f,   /*  92 C */
-    8292.49f,   /*  94 C */
-    7822.96f,   /*  96 C */
-    7384.64f,   /*  98 C */
-    6975.20f,   /* 100 C */
-};
+  int32_t k;
+  float r;
+  float p;
+  float scale;
+  int32_t i;
 
-_Static_assert((sizeof(temp_ntc_table) / sizeof(temp_ntc_table[0])) == TEMP_NTC_TABLE_POINTS,
-               "temp_ntc_table size mismatch");
+  /* e^x = 2^k * e^r, r in [0, ln2) */
+  k = (int32_t)(x * 1.44269504f);
+  r = x - ((float)k * 0.69314718f);
+  if(r < 0.0f)
+  {
+    r += 0.69314718f;
+    k--;
+  }
+
+  p = 1.0f + r * (1.0f + r * (0.5f + r * (0.16666667f +
+      r * (0.04166667f + r * (0.00833333f + r * 0.00138889f)))));
+
+  scale = 1.0f;
+  if(k >= 0)
+  {
+    for(i = 0; i < k; i++)
+    {
+      scale *= 2.0f;
+    }
+  }
+  else
+  {
+    for(i = 0; i > k; i--)
+    {
+      scale *= 0.5f;
+    }
+  }
+
+  return p * scale;
+}
+
+void temp_init(void)
+{
+  uint32_t i;
+  float t_c;
+  float t_k;
+  float inv_t;
+  float inv_t25 = 1.0f / 298.15f;
+
+  for(i = 0U; i < PRESET_NTC_TABLE_POINTS; i++)
+  {
+    t_c = PRESET_NTC_TABLE_MIN_C +
+          ((float)i * PRESET_NTC_TABLE_STEP_C);
+    t_k = t_c + 273.15f;
+    inv_t = 1.0f / t_k;
+    temp_ntc_table[i] = PRESET_NTC_R25_OHM *
+      temp_expf(PRESET_NTC_BETA_K * (inv_t - inv_t25));
+  }
+
+  temp_ntc_table_ready = 1U;
+}
 
 /* NTC 开路/短路判定：ADC 接近 0 或 4095 时认为传感器异常 */
 #define TEMP_NTC_ADC_FAULT_LOW          (2U)
 #define TEMP_NTC_ADC_FAULT_HIGH         (4093U)
 
 /* NTC 冷端实测比实际高约 10°C，直接在换算结果上做一阶修正 */
-#define TEMP_NTC_CAL_OFFSET_C           (-10.0f)
+#define TEMP_NTC_CAL_OFFSET_C           (g_preset_ntc.cal_offset_c)
 
 /* 热电偶默认曲线的一阶增益/偏移微调；默认不改，精修建议用 7 点热端标定 */
 #define TEMP_TC_TRIM_GAIN               (1.0f)
@@ -226,6 +213,11 @@ static float temp_ntc_resistance_to_celsius(float resistance)
   float ratio;
 
   /* 表按温度升高、电阻减小排列 */
+  if(temp_ntc_table_ready == 0U)
+  {
+    temp_init();
+  }
+
   if(resistance >= temp_ntc_table[0])
   {
     return TEMP_NTC_TABLE_MIN_C;
@@ -320,13 +312,23 @@ float temp_ntc_adc_to_celsius(uint16_t adc)
     adc_f = TEMP_ADC_FULL_SCALE - 1.0f;
   }
 
-#if TEMP_NTC_CONNECT_TO_GND
-  /* V_adc = VREF * R_ntc / (10k + R_ntc) */
-  resistance = TEMP_NTC_SERIES_OHM * adc_f / (TEMP_ADC_FULL_SCALE - adc_f);
-#else
-  /* V_adc = VREF * 10k / (R_ntc + 10k) */
-  resistance = TEMP_NTC_SERIES_OHM * (TEMP_ADC_FULL_SCALE - adc_f) / adc_f;
-#endif
+  if(temp_ntc_table_ready == 0U)
+  {
+    temp_init();
+  }
+
+  if(g_preset_ntc.connect_to_gnd != 0U)
+  {
+    /* V_adc = VREF * R_ntc / (Rs + R_ntc) */
+    resistance = g_preset_ntc.series_ohm * adc_f /
+                 (TEMP_ADC_FULL_SCALE - adc_f);
+  }
+  else
+  {
+    /* V_adc = VREF * Rs / (R_ntc + Rs) */
+    resistance = g_preset_ntc.series_ohm *
+                 (TEMP_ADC_FULL_SCALE - adc_f) / adc_f;
+  }
 
   return temp_ntc_resistance_to_celsius(resistance) +
          TEMP_NTC_CAL_OFFSET_C;

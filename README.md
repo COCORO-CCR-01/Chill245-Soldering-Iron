@@ -1,5 +1,4 @@
-# Chill245 烙铁控制器
-本项目将永远保持免费且开源，给我 Star 以作支持
+# Chill245 烙铁控制器（PlatformIO）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
@@ -176,7 +175,7 @@ HEATING        SLEEP ● 300s
   - `CHILL245`
   - `SOLDERING`
   - 作者 `COCORO-CCR-01`
-  - 版本 `Release-00.01.0007`
+  - 版本 `Release-00.10.0000`
   - `ISSUES WELCOME`
 - 任意按键返回 SYSTEM 列表
 - 版本和作者定义在 [version.h](include/version.h)
@@ -256,7 +255,7 @@ Device -> 'K'（失败返回 'E'）
 
 `data_len` 为实际 RLE 字节数，最后一包补 0 到 128 B；CRC32 只覆盖实际数据。
 
-壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **9**。
+壁纸模式使用 `'W'` 命令，meta 为 50 B：`data_len(4) + crc32(4) + colors[5](10) + palette[16](32)`。五级色写入 EEPROM，EEPROM 格式版本升到 **10**。
 
 ### 新版全屏主界面
 
@@ -762,8 +761,10 @@ SYSTEM
 ## 当前已实现
 
 - ADC1 三通道扫描，**200 Hz 消隐采样**；每 5 ms 先关加热 0.5 ms 再读取。
-- NTC 查表（100 kΩ / B=3950，10 kΩ 上拉分压）+ 热电偶冷端补偿。
-- 冷端实测偏高约 10°C：`TEMP_NTC_CAL_OFFSET_C = -10.0f` 直接修正。
+- 冷端 NTC 参数集中在 [preset.h](include/preset.h)，默认 100 kΩ / B=3950 / 10 kΩ 上拉。
+- 开机时由 `temp_init()` 按 Beta 方程动态生成 -20~100°C、2°C 步进的电阻表，不再使用写死的常量表。
+- 默认冷端偏高约 10°C：`PRESET_NTC_CAL_OFFSET_C = -10.0f`。
+- 更换 NTC 时只需修改 preset.h 中的 R25、B 值、分压电阻、拓扑、校准偏移和表范围，然后重新编译。
 - 上电或 ADC 恢复后的初始热端温度直接继承冷端温度，避免出现 0°C/负温跳变。
 - 热电偶默认曲线可用 `TEMP_TC_TRIM_GAIN/OFFSET_C` 微调；全量程精修建议使用 7 点 `TIP CAL`。
 - 热电偶默认二次拟合 `T=-1.1948e-6*N^2+0.19073*N+23.78`；100~400°C 七点校准可生成 10 点查表。
@@ -955,12 +956,12 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **53124 B（51.9 KiB）**，RAM 约 **13904 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
+- 当前 Flash 约 **53624 B（52.4 KiB）**，RAM 约 **14164 B**（壁纸 4bpp 缓存 6400 B），程序区 54 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒
 
-- NTC 分压默认按“10 kΩ 上拉到 VREF、NTC 下拉到 GND”计算；实际相反时修改 `src/temp.c` 的 `TEMP_NTC_CONNECT_TO_GND`。
+- NTC 分压默认按“10 kΩ 上拉到 VREF、NTC 下拉到 GND”计算；实际相反时修改 `include/preset.h` 的 `PRESET_NTC_CONNECT_TO_GND`。
 - 输入电压默认按 **10 kΩ / 1 kΩ 分压（VCC/11）**；实际电阻不同时修改 `powermanagement.h` 的 `POWER_VIN_DIVIDER_R1/R2`。
 - 震动开关默认 PB1 静止为高、震动拉低；唤醒使用持续 **100 ms** 的稳定电平变化，短噪声不唤醒。
 - 休眠不再由震动决定：ACTIVE 状态累计“低功率”的时间，高功率按 3 倍速泄放；低功率占绝对多数并累积到休眠时间后进入 REDUCED。
