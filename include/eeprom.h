@@ -22,7 +22,7 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x000CU)
+#define EEPROM_FORMAT_VERSION           (0x000DU)
 
 /**
   * @brief  所有掉电保存参数
@@ -58,7 +58,7 @@ typedef struct
   uint8_t ch224a_index;
   uint8_t maindash_alt;
   uint8_t ui_light;
-  uint8_t display_flip;
+  uint8_t display_left_hand;
   uint8_t boot_hold_enabled;
   float boot_high_temp_c;
 

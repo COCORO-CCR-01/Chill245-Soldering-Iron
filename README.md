@@ -1,4 +1,4 @@
-# Chill245 烙铁控制器（PlatformIO）
+# Chill245 烙铁控制器 By ATRI 
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
@@ -175,7 +175,7 @@ HEATING        SLEEP ● 300s
   - `CHILL245`
   - `SOLDERING`
   - 作者 `COCORO-CCR-01`
-  - 版本 `Release-01.01.1000`
+  - 版本 `Release-01.10.2001`
   - `ISSUES WELCOME`
 - 任意按键返回 SYSTEM 列表
 - 版本和作者定义在 [version.h](include/version.h)
@@ -183,9 +183,10 @@ HEATING        SLEEP ● 300s
 
 ### 屏幕方向 / 浅色模式 / 按键
 
-- `DISPLAY / UI -> ROTATE 180`：0/180° 旋转，支持左右手。
-  - 0°：MADCTL `0xA0`，偏移 (-2, 24)
-  - 180°：MADCTL `0x60`，偏移 (2, 28)
+- `DISPLAY / UI -> LEFT HAND`：左右手切换。
+  - 默认右手：180°，MADCTL `0x60`，偏移 (1, 28)
+  - 打开 LEFT HAND：0°，MADCTL `0xA0`，偏移 (-2, 24)
+  - 该开关默认 OFF，即开机默认 180° 右手握持
   - 设置保存到 EEPROM，菜单关闭后立即应用。
 - 浅色模式使用独立默认配色：
   - primary 深红
@@ -231,7 +232,7 @@ HEATING        SLEEP ● 300s
 - 壁纸压暗到 8/16；温度数字改为近白色，正文使用近白 + 双向 1px 阴影，提高壁纸上的对比度。
 - 透明文字根据前景亮度自动选择近黑或近白阴影。
 - 壁纸解码到 RAM 的 4bpp 缓存（6400 B），脏刷新用 `wallpaper_blit()` 恢复局部背景，不再每 250 ms 全屏重画。
-- 180° 旋转下壁纸按 32×8 小块绘制，启动图按每行 32px 小块绘制，避免 MV/MX 大窗口在面板边界回卷造成倾斜拉伸。
+- 180° 旋转下壁纸和启动图统一按 32×8 小块绘制，启动图复用壁纸缓存，避免大窗口回卷和 32px 竖直接缝。
 - 壁纸/启动图使用 **raw 像素流**，绕过暗/亮主题颜色映射，避免图片颜色被主题改写。
 - 面板存在红/蓝通道互换：`DISPLAY_SWAP_RB` 默认为 **1**，在 display.c 最底层把所有 RGB565 输出做 R/B 交换；MADCTL 仍保持 `0xA0`，不退回旧方向配置。
 - 默认三级色改为中性灰，避免默认界面标签变成绿色；透明文字阴影使用 0x0001 近黑，避免亮色主题把阴影映射成白色。
@@ -799,7 +800,7 @@ SYSTEM
 - 上电或 ADC 恢复后的初始热端温度直接继承冷端温度，避免出现 0°C/负温跳变。
 - 热电偶默认曲线可用 `TEMP_TC_TRIM_GAIN/OFFSET_C` 微调；全量程精修建议使用 7 点 `TIP CAL`。
 - 热电偶默认公式：`x = 240*N/(1+a)`，`T = -4.73e-7*x^2 + 0.12*x + 23.78`。
-- 热端电阻 `a` 在 `include/preset.h` 的 `PRESET_TC_RESISTANCE_KOHM` 配置，默认 **150 kΩ**，与旧公式等价。
+- 热端电阻 `a` 在 `include/preset.h` 的 `PRESET_TC_RESISTANCE_KOHM` 配置，默认 **200 kΩ**，与旧公式等价。
 - 100~400°C 七点校准可生成 10 点查表，校准表优先于默认公式。
 - 温度平滑：热电偶约 2 Hz 一阶低通，NTC 约 1.6 Hz 一阶低通；ADC 无效/NTC 故障时滤波器重新初始化。
 - 加热器保护：热电偶开路/短路、30 s 不升温、温度突变、严重失温、>500°C、温度数据无效、持续 100% 满功率 30 s；保护检测 1 kHz，故障锁存后下一拍立即切断 PWM。
@@ -851,7 +852,7 @@ phase 11 .. 199: 保持 PWM
 
 - R7 与失效温度都在 `include/preset.h`。
 - 表内容作为注释保留，实际只启用一个值：`PRESET_TC_OPEN_TEMP_C`。
-- 默认 R7 150 kΩ，理论值 784.8°C，实际保护点提前 50°C：`734.8f`。
+- 默认 R7 200 kΩ，理论值 784.8°C，实际保护点提前 50°C：`734.8f`。
 - 换 R7 时按理论值减 50 后只改这一个宏，不需要改查表代码。
 - 使用**未滤波的瞬时热电偶温度**比较，50 ms 去抖后锁存 `TC OPEN`。
 - 这样开路跳变会先于 `OVERTEMP` / `TEMP JUMP` 报出，不会被滤波滞后掩盖。
@@ -1020,7 +1021,7 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 原工程的 `syscalls.c` / `sysmem.c` 已一并迁移；显示/菜单的整数格式化使用 newlib `snprintf`。
 - 全局 `-Os` + `-flto` 压缩 Flash；`statemachine.c`、`pid.c`、`temp.c`、`adc.c`、`heater.c`、`verifyheater.c` 继续用 `#pragma GCC optimize("O2")` 保持 20 kHz 控制速度。
 - LTO 下启动文件的 TMR1 中断弱符号会覆盖真实 ISR，已用 `src/irq_tmr1.S` 强符号跳板指向 `sm_fast_update_irq()`，避免中断被优化掉。
-- 当前 Flash 约 **55520 B（54.2 KiB）**，RAM 约 **14192 B**（壁纸 4bpp 缓存 6400 B），程序区 55 KB。
+- 当前 Flash 约 **55464 B（54.2 KiB）**，RAM 约 **13876 B**（壁纸 4bpp 缓存 6400 B），程序区 55 KB。
 - `at32f421_conf.h` 放在 `include/`，并通过 `platformio.ini` 的 `-I$PROJECT_INCLUDE_DIR` 让框架驱动源码也能找到它。
 
 ## 硬件标定提醒
@@ -1033,5 +1034,5 @@ sm_set_pid_mode(PID_MODE_CUSTOM);
 - 按键手动休眠后 **30 秒内屏蔽震动唤醒**，30 秒后恢复。
 - 按键、菜单、Boost 会清零低功率累计。
 - CH224A 默认地址 0x22/0x23 自动探测，电压寄存器 0x0A；如果模块地址或寄存器不同，修改 `powermanagement.h` 的 `POWER_CH224A_*`。
-- 热电偶默认使用 `x=240*N/(1+a)`、`T=-4.73e-7*x^2+0.12*x+23.78`，热端电阻 `a` 由 preset.h 配置，默认 150 kΩ；上板后优先用 `SYSTEM -> TIP CAL` 做七点校准。
+- 热电偶默认使用 `x=240*N/(1+a)`、`T=-4.73e-7*x^2+0.12*x+23.78`，热端电阻 `a` 由 preset.h 配置，默认 200 kΩ；上板后优先用 `SYSTEM -> TIP CAL` 做七点校准。
 - 保护阈值集中在 `src/verifyheater.c` 顶部宏，按实际加热器调整。

@@ -57,7 +57,7 @@
 #define DISPLAY_MOSI_SOURCE             GPIO_PINS_SOURCE7
 
 /* ============================ 面板参数 ============================ */
-#define DISPLAY_X_OFFSET                (-2)
+#define DISPLAY_X_OFFSET                (-0U)
 #define DISPLAY_Y_OFFSET                (24U)
 
 /* MADCTL: MY | MV，横屏 160x80，RGB 顺序 */
@@ -158,8 +158,9 @@ void display_set_flip(uint8_t flip)
   {
     /* 180°：MX|MV，对应翻转后的面板 margin */
     madctl = 0x60U;
-    display_x_offset = 2;
-    display_y_offset = 28;
+    /* 同一块面板窗口，旋转交给 MADCTL；不要交换 offset */
+    display_x_offset = DISPLAY_X_OFFSET;
+    display_y_offset = DISPLAY_Y_OFFSET;
   }
   else
   {

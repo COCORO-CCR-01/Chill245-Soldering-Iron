@@ -263,7 +263,7 @@ void eeprom_capture_current(void)
   float time_step_s = g_eeprom_params.time_step_s;
   uint8_t maindash_alt = g_eeprom_params.maindash_alt;
   uint8_t ui_light = g_eeprom_params.ui_light;
-  uint8_t display_flip = g_eeprom_params.display_flip;
+  uint8_t display_left_hand = g_eeprom_params.display_left_hand;
   uint8_t boot_hold_enabled = g_eeprom_params.boot_hold_enabled;
   float boot_high_temp_c = g_eeprom_params.boot_high_temp_c;
   float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
@@ -279,7 +279,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.time_step_s = time_step_s;
   g_eeprom_params.maindash_alt = maindash_alt;
   g_eeprom_params.ui_light = ui_light;
-  g_eeprom_params.display_flip = display_flip;
+  g_eeprom_params.display_left_hand = display_left_hand;
   g_eeprom_params.boot_hold_enabled = boot_hold_enabled;
   g_eeprom_params.boot_high_temp_c = boot_high_temp_c;
   g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
@@ -351,7 +351,8 @@ void eeprom_apply(void)
   sm_get_status(&status);
 
   display_set_light_theme(g_eeprom_params.ui_light);
-  display_set_flip(g_eeprom_params.display_flip);
+  /* 默认右手 = 180°；菜单 LEFT HAND 打开时切到 0° */
+  display_set_flip((g_eeprom_params.display_left_hand == 0U) ? 1U : 0U);
   appcolors_set(g_eeprom_params.app_colors);
   if(g_eeprom_params.ui_light != 0U)
   {
@@ -467,7 +468,7 @@ void eeprom_init(void)
     g_eeprom_params.time_step_s = 5.0f;
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
-    g_eeprom_params.display_flip = 0U;
+    g_eeprom_params.display_left_hand = 0U;
     g_eeprom_params.boot_hold_enabled = 1U;
     g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;

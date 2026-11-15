@@ -26,6 +26,7 @@ void wallpaper_draw(void);
   * @brief  重绘一个壁纸矩形，用于脏刷新前恢复背景
   */
 void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+void wallpaper_blit_original(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
 #ifdef __cplusplus
 }

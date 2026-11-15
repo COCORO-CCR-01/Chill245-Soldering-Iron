@@ -33,7 +33,8 @@ uint8_t wallpaper_is_available(void)
   return (wallpaper_ready != 0U) ? 1U : wallpaper_prepare();
 }
 
-void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+static void wallpaper_blit_ex(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                              uint8_t dim)
 {
   uint16_t row;
   uint16_t col;
@@ -91,7 +92,11 @@ void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
           index = wallpaper_packed[bit >> 1];
           index = ((bit & 1U) == 0U) ?
                   (uint8_t)(index >> 4) : (uint8_t)(index & 0x0FU);
-          wallpaper_line[col] = wallpaper_dim(wallpaper_palette[index]);
+          wallpaper_line[col] = wallpaper_palette[index];
+          if(dim != 0U)
+          {
+            wallpaper_line[col] = wallpaper_dim(wallpaper_line[col]);
+          }
         }
 
         display_write_pixel_stream_raw(wallpaper_line, tw);
@@ -100,6 +105,16 @@ void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
       display_end_pixel_stream();
     }
   }
+}
+
+void wallpaper_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+{
+  wallpaper_blit_ex(x, y, w, h, 1U);
+}
+
+void wallpaper_blit_original(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+{
+  wallpaper_blit_ex(x, y, w, h, 0U);
 }
 
 void wallpaper_draw(void)

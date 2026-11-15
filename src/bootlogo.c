@@ -1,4 +1,6 @@
 #include "bootlogo.h"
+#include "wallpaper.h"
+
 #include "at32f421_conf.h"
 #include "display.h"
 #include "statemachine.h"
@@ -38,7 +40,6 @@ typedef struct
 _Static_assert(sizeof(bootlogo_header_t) == BOOTLOGO_HEADER_SIZE,
                "bootlogo header size");
 
-static uint16_t bootlogo_line[BOOTLOGO_WIDTH];
 
 static uint32_t bootlogo_crc32(const uint8_t *data, uint32_t len)
 {
@@ -184,51 +185,6 @@ static uint8_t bootlogo_pb_nibble(bootlogo_pb_t *pb)
 }
 
 
-static void bootlogo_render(void)
-{
-  const bootlogo_header_t *header =
-    (const bootlogo_header_t *)BOOTLOGO_FLASH_ADDR;
-  bootlogo_pb_t pb;
-  uint16_t x;
-  uint16_t y;
-  uint16_t tx;
-  uint16_t tw;
-  uint16_t color;
-  uint8_t index;
-
-  pb.src = bootlogo_data();
-  pb.len = (uint16_t)header->data_len;
-  pb.pos = 0U;
-  pb.remain = 0U;
-  pb.repeat = 0U;
-  pb.repeat_mode = 0U;
-  pb.have_low = 0U;
-  pb.low_nibble = 0U;
-
-  /*
-   * 180° 旋转时整屏大窗口会回卷，按 32px 行块输出；
-   * RLE 仍按行顺序解码，不需要额外大缓冲。
-   */
-  for(y = 0U; y < BOOTLOGO_HEIGHT; y++)
-  {
-    for(x = 0U; x < BOOTLOGO_WIDTH; x++)
-    {
-      index = bootlogo_pb_nibble(&pb);
-      color = header->palette[index & 0x0FU];
-      bootlogo_line[x] = color;
-    }
-
-    for(tx = 0U; tx < BOOTLOGO_WIDTH; tx += 32U)
-    {
-      tw = (uint16_t)((BOOTLOGO_WIDTH - tx) > 32U ?
-                      32U : (BOOTLOGO_WIDTH - tx));
-      display_set_window(tx, y, tw, 1U);
-      display_begin_pixel_stream();
-      display_write_pixel_stream_raw(&bootlogo_line[tx], tw);
-      display_end_pixel_stream();
-    }
-  }
-}
 
 
 uint8_t bootlogo_copy_image(uint8_t *packed, uint16_t packed_len,
@@ -287,7 +243,10 @@ void bootlogo_boot(float delay_s)
     delay_ms = 10000U;
   }
 
-  bootlogo_render();
+  if(wallpaper_prepare() != 0U)
+  {
+    wallpaper_blit_original(0U, 0U, BOOTLOGO_WIDTH, BOOTLOGO_HEIGHT);
+  }
 
   for(elapsed = 0U; elapsed < delay_ms; elapsed += 50U)
   {
@@ -623,6 +582,7 @@ uint8_t bootlogo_poll(void)
   }
 
   value = (uint8_t)usart_data_receive(USART1);
+
   if((value != BOOTLOGO_CMD_START) && (value != 'W'))
   {
     return 0U;
