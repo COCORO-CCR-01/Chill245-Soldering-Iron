@@ -15,6 +15,7 @@
 #include "statemachine.h"
 #include "powermanagement.h"
 #include "buzzer.h"
+#include "menu.h"
 #include "buttons.h"
 #include "fmt.h"
 #include <stddef.h>
@@ -42,6 +43,7 @@ static uint8_t hms_drawn;
 static hms_view_t hms_view;
 static uint32_t hms_view_until_ms;
 static uint8_t hms_menu_last;
+static uint8_t hms_menu_long_done;
 static uint32_t hms_info_ms;
 
 static void hms_draw_center(const char *text, uint16_t y, uint16_t color,
@@ -201,8 +203,15 @@ static void hms_draw_fault_notice(void)
     fault_text = hms_fault_text(status.fault);
   }
 
-  hms_draw_center(fault_text, 38U, HMS_YELLOW, 2U);
-  hms_draw_center("PRESS MENU TO RETRY", 66U, HMS_GRAY, 2U);
+  hms_draw_center(fault_text, 36U, HMS_YELLOW, 2U);
+  if(power_fault == POWER_FAULT_UNDERVOLTAGE)
+  {
+    hms_draw_center("MENU RETRY   HOLD MENU SETUP", 67U, HMS_GRAY, 1U);
+  }
+  else
+  {
+    hms_draw_center("PRESS MENU TO RETRY", 66U, HMS_GRAY, 2U);
+  }
 }
 
 static void hms_draw_eeprom_recovered(void)
@@ -226,6 +235,7 @@ void hms_init(void)
   hms_drawn = 0U;
   hms_view = HMS_VIEW_NONE;
   hms_view_until_ms = 0U;
+  hms_menu_long_done = 0U;
 }
 
 void hms_set_fatal(hms_code_t code)
@@ -328,6 +338,7 @@ uint8_t hms_task(uint32_t now_ms)
       hms_view = HMS_VIEW_FAULT;
       hms_drawn = 0U;
       hms_menu_last = buttons_is_pressed(BUTTON_MENU);
+      hms_menu_long_done = 0U;
     }
 
     if((hms_drawn == 0U) ||
@@ -339,16 +350,34 @@ uint8_t hms_task(uint32_t now_ms)
     }
 
     menu_pressed = buttons_is_pressed(BUTTON_MENU);
-    if((menu_pressed != 0U) && (hms_menu_last == 0U))
+
+    /* 输入欠压时，长按 MENU 进入受限电源设置，而不是直接重试。 */
+    if((power_get_fault() == POWER_FAULT_UNDERVOLTAGE) &&
+       (menu_pressed != 0U) &&
+       (buttons_get_press_duration(BUTTON_MENU, now_ms) >= 2000U) &&
+       (hms_menu_long_done == 0U))
     {
-      (void)sm_clear_fault();
-      (void)power_clear_fault();
-      (void)sm_set_heater_enabled(1U);
-      hms_view = HMS_VIEW_NONE;
-      hms_drawn = 0U;
-      hms_menu_last = 1U;
-      return 0U;
+      hms_menu_long_done = 1U;
+      menu_open_service_setup();
+      return 1U;
     }
+
+    /* 短按 MENU 在释放时重试，避免长按被误判成短按。 */
+    if((menu_pressed == 0U) && (hms_menu_last != 0U))
+    {
+      if(hms_menu_long_done == 0U)
+      {
+        (void)sm_clear_fault();
+        (void)power_clear_fault();
+        (void)sm_set_heater_enabled(1U);
+        hms_view = HMS_VIEW_NONE;
+        hms_drawn = 0U;
+        hms_menu_last = 0U;
+        return 0U;
+      }
+      hms_menu_long_done = 0U;
+    }
+
     hms_menu_last = menu_pressed;
     return 1U;
   }

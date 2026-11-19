@@ -22,7 +22,7 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x000DU)
+#define EEPROM_FORMAT_VERSION           (0x000EU)
 
 /**
   * @brief  所有掉电保存参数
@@ -80,6 +80,7 @@ typedef struct
   float verify_no_rise_delta_c;
   float verify_full_power_s;
   float verify_drop_c;
+  float max_power_pct;
 } eeprom_params_t;
 
 extern eeprom_params_t g_eeprom_params;

@@ -37,6 +37,8 @@ uint8_t menu_is_open(void);
   * @retval none
   */
 void menu_open(void);
+void menu_open_service_setup(void);
+uint8_t menu_is_service_mode(void);
 
 /**
   * @brief  双击 MENU 打开快速设定温度编辑

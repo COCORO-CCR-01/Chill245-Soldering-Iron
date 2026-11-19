@@ -116,6 +116,9 @@ void pid_reset(void);
   * @param  setpoint_c: 目标温度，°C，内部限幅 0~450
   * @retval none
   */
+void pid_set_output_limit(uint8_t percent);
+uint8_t pid_get_output_limit(void);
+
 void pid_set_setpoint(float setpoint_c);
 
 /**

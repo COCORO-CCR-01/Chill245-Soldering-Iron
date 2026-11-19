@@ -5,6 +5,7 @@
 #include "fmt.h"
 #include "heater.h"
 #include "statemachine.h"
+#include "menu.h"
 
 #define BOOTGUARD_BG        (0x0001U)
 #define BOOTGUARD_WHITE     (0xFFFEU)
@@ -79,6 +80,7 @@ static void bootguard_draw(const sm_status_t *status)
     bootguard_center(24U, "HEAT OFF", BOOTGUARD_WHITE, 2U);
     bootguard_center(44U, "NEXT", BOOTGUARD_YELLOW, 2U);
     bootguard_center(62U, "START", BOOTGUARD_WHITE, 1U);
+    bootguard_center(72U, "HOLD MENU SETUP", BOOTGUARD_YELLOW, 1U);
   }
   else
   {
@@ -100,6 +102,11 @@ void bootguard_init(void)
 uint8_t bootguard_is_active(void)
 {
   return (bootguard_state != BOOTGUARD_DONE) ? 1U : 0U;
+}
+
+void bootguard_invalidate(void)
+{
+  bootguard_last_draw = 0U;
 }
 
 void bootguard_abort(void)
@@ -173,6 +180,13 @@ void bootguard_task(uint32_t now_ms)
       break;
 
     case BOOTGUARD_HOLD:
+      if((buttons_is_pressed(BUTTON_MENU) != 0U) &&
+         (buttons_get_press_duration(BUTTON_MENU, now_ms) >= 2000U))
+      {
+        menu_open_service_setup();
+        return;
+      }
+
       if(next_edge != 0U)
       {
         (void)sm_set_heater_enabled(1U);

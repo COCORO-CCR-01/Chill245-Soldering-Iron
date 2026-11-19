@@ -43,6 +43,7 @@ static float power_reduced_temp_c;
 static uint32_t power_reduced_off_timeout_ms;
 static uint32_t power_backlight_off_timeout_ms;
 
+static uint8_t power_max_duty_pct = 100U;
 static uint16_t power_low_voltage_mv;
 static uint16_t power_high_voltage_mv;
 static uint16_t power_voltage_hysteresis_mv;
@@ -822,14 +823,6 @@ void power_update(uint32_t now_ms)
   switch(power_state)
   {
     case POWER_STATE_ACTIVE:
-      if((motion_activity != 0U) &&
-         (sm_get_state() == SM_STATE_DISABLED) &&
-         (sm_is_heater_enabled() == 0U))
-      {
-        /* 手动 HEATER OFF / SM_STATE_DISABLED：稳定震动边沿恢复加热 */
-        (void)sm_set_heater_enabled(1U);
-      }
-
       /* 休眠只看功率：≤15% 的功率占绝对多数才累积休眠时间 */
       sm_get_status(&status);
       if(status.power <= power_low_power_threshold)
@@ -957,6 +950,26 @@ void power_set_backlight_off_timeout_ms(uint32_t ms)
   {
     power_backlight_off_timeout_ms = ms;
   }
+}
+
+uint8_t power_get_max_duty(void)
+{
+  return power_max_duty_pct;
+}
+
+void power_set_max_duty(uint8_t percent)
+{
+  if(percent < 10U)
+  {
+    percent = 10U;
+  }
+
+  if(percent > 100U)
+  {
+    percent = 100U;
+  }
+
+  power_max_duty_pct = percent;
 }
 
 void power_set_voltage_limits(float low_v, float high_v)

@@ -121,6 +121,7 @@ typedef struct
 } pid_autotune_t;
 
 static pid_state_t pid_state;
+static uint8_t pid_output_limit = 100U;
 static pid_custom_point_t pid_custom_points[PID_CUSTOM_POINTS];
 static pid_autotune_t pid_at;
 
@@ -493,6 +494,26 @@ void pid_init(void)
   pid_reset_runtime();
 }
 
+void pid_set_output_limit(uint8_t percent)
+{
+  if(percent < 10U)
+  {
+    percent = 10U;
+  }
+
+  if(percent > 100U)
+  {
+    percent = 100U;
+  }
+
+  pid_output_limit = percent;
+}
+
+uint8_t pid_get_output_limit(void)
+{
+  return pid_output_limit;
+}
+
 void pid_reset(void)
 {
   pid_autotune_cancel();
@@ -752,9 +773,9 @@ static float pid_compute(float temperature_c, float dt_s)
   if(error > PID_BULK_BAND_C)
   {
     pid_state.integral = 0.0f;
-    pid_state.output = PID_OUTPUT_MAX;
+    pid_state.output = (float)pid_output_limit;
     pid_state.prev_temp_c = temperature_c;
-    return PID_OUTPUT_MAX;
+    return (float)pid_output_limit;
   }
 
   /* 设定温度前馈：只在目标下方给基础功率；越接近目标越小，避免过冲后仍有基础加热 */
@@ -773,7 +794,7 @@ static float pid_compute(float temperature_c, float dt_s)
     feedforward = 0.0f;
   }
 
-  output_max = PID_OUTPUT_MAX;
+  output_max = (float)pid_output_limit;
 
   /* 积分分离：远离目标时只保留已有积分，不再累积 */
   i_candidate = pid_state.integral;

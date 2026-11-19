@@ -16,6 +16,7 @@
   */
 
 #include "buttons.h"
+#include "preset.h"
 #include "at32f421_conf.h"
 #include <stddef.h>
 
@@ -56,12 +57,19 @@ static uint8_t buttons_read_pressed(button_id_t button)
       break;
 
     case BUTTON_PREV:
-      /* 与 MENU 交换物理位置 */
+#if PRESET_REVERT_PREV_NEXT
+      level = gpio_input_data_bit_read(GPIOB, GPIO_PINS_4);
+#else
       level = gpio_input_data_bit_read(GPIOA, GPIO_PINS_15);
+#endif
       break;
 
     case BUTTON_NEXT:
+#if PRESET_REVERT_PREV_NEXT
+      level = gpio_input_data_bit_read(GPIOA, GPIO_PINS_15);
+#else
       level = gpio_input_data_bit_read(GPIOB, GPIO_PINS_4);
+#endif
       break;
 
     default:

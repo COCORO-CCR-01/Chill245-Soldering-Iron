@@ -28,6 +28,7 @@
 #include "verifyheater.h"
 #include "pid.h"
 #include "heater.h"
+#include "powermanagement.h"
 #include "hms.h"
 #include "at32f421_conf.h"
 #include "wk_system.h"
@@ -238,12 +239,14 @@ static void sm_fast_update(void)
         break;
     }
 
-    if(verifyheater_is_fault() != 0U)
+    /* 最大加热占空比限制，同时作用于 PID 和自动整定输出 */
     {
-      sm_state = SM_STATE_FAULT;
-      power = 0U;
+      uint8_t max_duty = power_get_max_duty();
+      if(power > max_duty)
+      {
+        power = max_duty;
+      }
     }
-
 
     if(verifyheater_is_fault() != 0U)
     {

@@ -120,6 +120,7 @@ static menu_nav_t menu_nav_stack[8];
 static uint8_t menu_nav_depth;
 
 static uint8_t menu_open_flag;
+static uint8_t menu_service_mode;
 static uint8_t menu_need_draw;
 static uint8_t menu_long_handled;
 static uint8_t menu_quick_edit;
@@ -137,10 +138,6 @@ static const char *const menu_pid_mode_options[] =
   "STD", "BOOST", "CUSTOM"
 };
 
-static const char *const menu_ch224a_options[] =
-{
-  "5V", "9V", "12V", "15V", "20V", "28V"
-};
 
 static void menu_action_back(void);
 static void menu_action_sleep(void);
@@ -184,7 +181,7 @@ static const menu_item_t menu_sleep_items[] =
   { "SLEEP TEMP",   MENU_ITEM_FLOAT, &menu_config.reduced_temp_c,    NULL, NULL, 0, 5.0f,   50.0f,  400.0f,  0U, "C",  NULL },
   { "HEAT OFF T",   MENU_ITEM_FLOAT, &menu_config.reduced_off_s,     NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },
   { "LCD OFF T",    MENU_ITEM_FLOAT, &menu_config.backlight_off_s,   NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },
-  { "PD VOLTAGE",   MENU_ITEM_ENUM,  &menu_config.ch224a_index,       NULL, menu_ch224a_options, 6U, 1.0f, 0.0f, 5.0f, 0U, "", NULL },
+  { "MAX POWER",    MENU_ITEM_FLOAT, &menu_config.max_power_pct,      NULL, NULL, 0, 5.0f,  10.0f, 100.0f, 0U, "%", NULL },
   { "LOW VOLT",     MENU_ITEM_FLOAT, &menu_config.low_voltage_v,     NULL, NULL, 0, 0.5f,   5.0f,   30.0f,   1U, "V",  NULL },
   { "HIGH VOLT",    MENU_ITEM_FLOAT, &menu_config.high_voltage_v,    NULL, NULL, 0, 0.5f,   20.0f,  40.0f,   1U, "V",  NULL },
   { "VOLT HYST",    MENU_ITEM_FLOAT, &menu_config.voltage_hysteresis_v, NULL, NULL, 0, 0.1f, 0.0f,   3.0f,    1U, "V",  NULL },
@@ -192,6 +189,19 @@ static const menu_item_t menu_sleep_items[] =
   { "RECOVERY",     MENU_ITEM_FLOAT, &menu_config.voltage_recovery_ms, NULL, NULL, 0, 100.0f, 100.0f, 60000.0f, 0U, "ms", NULL },
   { "SLEEP NOW",    MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_sleep },
   { "BACK",         MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back }
+};
+
+static const menu_item_t menu_power_service_items[] =
+{
+  { "LOW VOLT",  MENU_ITEM_FLOAT, &menu_config.low_voltage_v, NULL, NULL, 0, 0.5f,  5.0f,  30.0f,  1U, "V", NULL },
+  { "MAX POWER", MENU_ITEM_FLOAT, &menu_config.max_power_pct, NULL, NULL, 0, 5.0f, 10.0f, 100.0f, 0U, "%", NULL },
+  { "BACK",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back },
+};
+
+static const menu_page_t menu_page_power_service =
+{
+  "POWER SETUP", menu_power_service_items,
+  (uint8_t)(sizeof(menu_power_service_items) / sizeof(menu_power_service_items[0]))
 };
 
 static const menu_item_t menu_protect_items[] =
@@ -392,6 +402,10 @@ void menu_open(void)
   }
 
   power_wake();
+
+  /* 进入完整设置菜单即关闭加热，退出菜单后保持关闭 */
+  (void)sm_set_heater_enabled(0U);
+
   eeprom_capture_current();
 
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
@@ -406,6 +420,36 @@ void menu_open(void)
   menu_long_handled = 1U;
 }
 
+void menu_open_service_setup(void)
+{
+  if(menu_open_flag != 0U)
+  {
+    return;
+  }
+
+  onekeyboost_cancel();
+  power_wake();
+  (void)sm_set_heater_enabled(0U);
+  eeprom_capture_current();
+
+  menu_nav.view = (uint8_t)MENU_VIEW_LIST;
+  menu_nav.page = &menu_page_power_service;
+  menu_nav.selected = 0U;
+  menu_nav.first = 0U;
+  menu_nav.curve_kind = 0U;
+  menu_nav_depth = 0U;
+
+  menu_service_mode = 1U;
+  menu_open_flag = 1U;
+  menu_need_draw = 1U;
+  menu_long_handled = 1U;
+}
+
+uint8_t menu_is_service_mode(void)
+{
+  return menu_service_mode;
+}
+
 void menu_close(void)
 {
   if(menu_open_flag == 0U)
@@ -418,6 +462,13 @@ void menu_close(void)
   {
     buzzer_play(BUZZER_SOUND_ERROR);
   }
+  if(menu_service_mode != 0U)
+  {
+    menu_service_mode = 0U;
+    (void)power_clear_fault();
+    hms_force_redraw();
+    bootguard_invalidate();
+  }
   menu_close_internal();
 }
 
@@ -429,6 +480,7 @@ void menu_force_close(void)
   }
 
   menu_open_flag = 0U;
+  menu_service_mode = 0U;
   menu_nav_depth = 0U;
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
   menu_need_draw = 1U;
@@ -489,16 +541,25 @@ static void menu_start_edit(const menu_item_t *item)
 
 void menu_open_quick_setpoint(void)
 {
+  uint8_t heater_was_enabled;
+
   if(menu_open_flag != 0U)
   {
     return;
   }
 
+  heater_was_enabled = sm_is_heater_enabled();
   menu_open();
 
   if(menu_open_flag == 0U)
   {
     return;
+  }
+
+  /* 快速设定温度不是完整设置菜单，恢复进入前的加热状态 */
+  if(heater_was_enabled != 0U)
+  {
+    (void)sm_set_heater_enabled(1U);
   }
 
   menu_nav.page = &menu_page_temperature;
@@ -1484,7 +1545,7 @@ static void menu_draw(void)
 
 static void menu_on_button(button_id_t button, button_event_t event)
 {
-  if(bootguard_is_active() != 0U)
+  if((bootguard_is_active() != 0U) && (menu_service_mode == 0U))
   {
     return;
   }
@@ -1573,7 +1634,18 @@ void menu_update(uint32_t now_ms)
 
       if(menu_open_flag != 0U)
       {
-        menu_back();
+        if(menu_service_mode != 0U)
+        {
+          if(menu_nav.view == (uint8_t)MENU_VIEW_EDIT)
+          {
+            menu_confirm_edit();
+          }
+          menu_close();
+        }
+        else
+        {
+          menu_back();
+        }
       }
       else
       {

@@ -24,6 +24,7 @@
 #include "buzzer.h"
 #include "hms.h"
 #include "heater.h"
+#include "pid.h"
 #include "display.h"
 #include "bootlogo.h"
 #include "appcolors.h"
@@ -64,34 +65,6 @@ typedef enum
   EEPROM_RECORD_CORRUPT
 } eeprom_record_status_t;
 
-static const float eeprom_ch224a_table[6] =
-{
-  5.0f, 9.0f, 12.0f, 15.0f, 20.0f, 28.0f
-};
-
-static uint8_t eeprom_ch224a_index_from_voltage(float voltage)
-{
-  uint8_t best = 4U;
-  float best_delta = 1000.0f;
-
-  for(uint8_t i = 0U; i < 6U; i++)
-  {
-    float delta = voltage - eeprom_ch224a_table[i];
-
-    if(delta < 0.0f)
-    {
-      delta = -delta;
-    }
-
-    if(delta < best_delta)
-    {
-      best_delta = delta;
-      best = i;
-    }
-  }
-
-  return best;
-}
 
 static uint32_t eeprom_crc32(const void *data, uint32_t length)
 {
@@ -213,7 +186,9 @@ static uint8_t eeprom_params_sane(const eeprom_params_t *params)
      (params->setpoint_step_c < 1.0f) ||
      (params->setpoint_step_c > 100.0f) ||
      (params->time_step_s < 1.0f) ||
-     (params->time_step_s > 600.0f))
+     (params->time_step_s > 600.0f) ||
+     (params->max_power_pct < 10.0f) ||
+     (params->max_power_pct > 100.0f))
   {
     return 0U;
   }
@@ -268,6 +243,7 @@ void eeprom_capture_current(void)
   float boot_high_temp_c = g_eeprom_params.boot_high_temp_c;
   float bootlogo_delay_s = g_eeprom_params.bootlogo_delay_s;
   float quick_setpoint_save_s = g_eeprom_params.quick_setpoint_save_s;
+  float max_power_pct = g_eeprom_params.max_power_pct;
 
   memset(&g_eeprom_params, 0, sizeof(g_eeprom_params));
 
@@ -284,6 +260,7 @@ void eeprom_capture_current(void)
   g_eeprom_params.boot_high_temp_c = boot_high_temp_c;
   g_eeprom_params.bootlogo_delay_s = bootlogo_delay_s;
   g_eeprom_params.quick_setpoint_save_s = quick_setpoint_save_s;
+  g_eeprom_params.max_power_pct = max_power_pct;
 
   g_eeprom_params.setpoint_c = sm_get_setpoint();
   g_eeprom_params.pid_mode = (uint8_t)sm_get_pid_mode();
@@ -319,9 +296,8 @@ void eeprom_capture_current(void)
     (float)power_get_voltage_trip_time_ms();
   g_eeprom_params.voltage_recovery_ms =
     (float)power_get_voltage_recovery_time_ms();
+  g_eeprom_params.max_power_pct = (float)power_get_max_duty();
 
-  g_eeprom_params.ch224a_index =
-    eeprom_ch224a_index_from_voltage(power_get_ch224a_voltage());
 
   g_eeprom_params.autoroll_s =
     (float)autoroll_get_interval() / 1000.0f;
@@ -346,7 +322,6 @@ void eeprom_apply(void)
   temp_tc_cal_point_t cal_points[TEMP_TC_CAL_POINTS];
   verifyheater_config_t verify;
   sm_status_t status;
-  uint8_t ch224a_current_index;
 
   sm_get_status(&status);
 
@@ -389,20 +364,13 @@ void eeprom_apply(void)
 
   power_set_voltage_limits(g_eeprom_params.low_voltage_v,
                            g_eeprom_params.high_voltage_v);
+  power_set_max_duty((uint8_t)(g_eeprom_params.max_power_pct + 0.5f));
+  pid_set_output_limit((uint8_t)(g_eeprom_params.max_power_pct + 0.5f));
   power_set_voltage_hysteresis(g_eeprom_params.voltage_hysteresis_v);
   power_set_voltage_trip_time_ms(
     (uint32_t)(g_eeprom_params.voltage_trip_ms + 0.5f));
   power_set_voltage_recovery_time_ms(
     (uint32_t)(g_eeprom_params.voltage_recovery_ms + 0.5f));
-
-  ch224a_current_index = eeprom_ch224a_index_from_voltage(
-    power_get_ch224a_voltage());
-
-  if((g_eeprom_params.ch224a_index <= 5U) &&
-     (g_eeprom_params.ch224a_index != ch224a_current_index))
-  {
-    (void)power_ch224a_set_voltage_index(g_eeprom_params.ch224a_index);
-  }
 
   autoroll_set_interval(
     (uint32_t)((g_eeprom_params.autoroll_s * 1000.0f) + 0.5f));
@@ -472,6 +440,7 @@ void eeprom_init(void)
     g_eeprom_params.boot_hold_enabled = 1U;
     g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;
+    g_eeprom_params.max_power_pct = 100.0f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;
     g_eeprom_params.app_colors[0] = 0xFC9FU;

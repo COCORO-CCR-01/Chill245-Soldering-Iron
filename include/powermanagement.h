@@ -176,6 +176,10 @@ void power_set_reduced_temperature(float celsius);
 void power_set_reduced_off_timeout_ms(uint32_t ms);
 void power_set_backlight_off_timeout_ms(uint32_t ms);
 
+/* 最大加热占空比（功率限制） 10~100% */
+uint8_t power_get_max_duty(void);
+void power_set_max_duty(uint8_t percent);
+
 /* 电压保护参数读取/设置 */
 void power_get_voltage_limits(float *low_v, float *high_v);
 float power_get_voltage_hysteresis(void);

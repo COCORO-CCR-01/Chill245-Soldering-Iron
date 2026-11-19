@@ -9,6 +9,7 @@ extern "C" {
 
 void bootguard_init(void);
 void bootguard_task(uint32_t now_ms);
+void bootguard_invalidate(void);
 uint8_t bootguard_is_active(void);
 void bootguard_abort(void);
 

@@ -142,6 +142,12 @@ static void main_adjust_setpoint(int8_t direction)
   }
 }
 
+static uint8_t main_heater_manually_disabled(void)
+{
+  return ((power_get_state() == POWER_STATE_ACTIVE) &&
+          (sm_get_state() == SM_STATE_DISABLED)) ? 1U : 0U;
+}
+
 static void main_buttons(button_id_t button, button_event_t event)
 {
   if(bootguard_is_active() != 0U)
@@ -151,6 +157,15 @@ static void main_buttons(button_id_t button, button_event_t event)
 
   if((menu_is_open() != 0U) || (tempcal_is_active() != 0U))
   {
+    return;
+  }
+
+  /* 手动 DISABLED 时，任意按键短按一次先恢复加热；本次不再执行翻页/调温 */
+  if((event == BUTTON_EVENT_CLICK) && (main_heater_manually_disabled() != 0U))
+  {
+    (void)sm_set_heater_enabled(1U);
+    power_notify_activity(sm_get_uptime_ms());
+    buzzer_play(BUZZER_SOUND_KEY);
     return;
   }
 
@@ -410,12 +425,25 @@ int main(void)
     led_task(now_ms);
 
     /*
+     * 受限电源设置页：BOOT HOLD 或输入欠压长按 MENU 进入。
+     * 使用菜单框架，保存后回到原状态。
+     */
+    if(menu_is_service_mode() != 0U)
+    {
+      power_wake();
+      menu_update(now_ms);
+      hms_was_active = 1U;
+      wk_delay_ms(SM_SLOW_PERIOD_MS);
+      continue;
+    }
+
+    /*
      * HMS 占用屏幕时不再绘制菜单/主界面。
      * 致命错误持续显示；自检 ALL OK 约 3 s 后自动返回。
      */
     if(hms_task(now_ms) != 0U)
     {
-      if(menu_is_open() != 0U)
+      if((menu_is_open() != 0U) && (menu_is_service_mode() == 0U))
       {
         menu_force_close();
       }

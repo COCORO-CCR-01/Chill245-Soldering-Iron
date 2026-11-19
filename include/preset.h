@@ -1,4 +1,4 @@
-#ifndef __PRESET_H
+﻿#ifndef __PRESET_H
 #define __PRESET_H
 
 #ifdef __cplusplus
@@ -11,17 +11,18 @@ extern "C" {
  * ============================ 修改方法 ============================
  *
  * 1. 冷端 NTC：
- *    - R25_OHM   填 25°C 标称阻值，单位 Ω。
- *    - BETA_K    填 NTC 的 B 值，单位 K。
- *    - SERIES_OHM填分压电阻，单位 Ω。
+ *    - R25_OHM：填 25°C 标称阻值，单位 Ω。
+ *    - BETA_K：填 NTC 的 B 值，单位 K。
+ *    - SERIES_OHM：填分压电阻，单位 Ω。
  *    - CONNECT_TO_GND：
- *        1 = NTC 下拉到 GND（10k 上拉到 VREF）
- *        0 = NTC 上拉到 VREF（10k 下拉到 GND）
+ *        1 = NTC 下拉到 GND，10k 上拉到 VREF；
+ *        0 = NTC 上拉到 VREF，10k 下拉到 GND。
  *    - CAL_OFFSET_C：冷端整体偏移修正，单位 °C。
  *
  * 2. 热端：
- *    - TC_RESISTANCE_KOHM 填热端电阻，单位 kΩ，默认 200.0f。
- *    - 公式：x = 240*N/(1+a)，T = -4.73e-7*x^2 + 0.12*x + 23.78
+ *    - TC_RESISTANCE_KOHM：填热端电阻，单位 kΩ，默认 200.0f。
+ *    - 公式：x = 240*N/(1+a)
+ *             T = -4.73e-7*x^2 + 0.12*x + 23.78
  *    - 这里 a 的单位是 kΩ，所以默认填 200.0f，不能填 200000。
  *
  * 3. 修改后必须重新编译并烧录：
@@ -40,6 +41,21 @@ extern "C" {
 #define PRESET_NTC_TABLE_MIN_C        (-20.0f)
 #define PRESET_NTC_TABLE_STEP_C       (2.0f)
 #define PRESET_NTC_TABLE_POINTS       (61U)
+
+/*
+ * PREV / NEXT 按键物理位置反转。
+ *
+ * 0 = 保持当前接线：
+ *       PREV = PA15
+ *       NEXT = PB4
+ * 1 = 反转 PREV / NEXT：
+ *       PREV = PB4
+ *       NEXT = PA15
+ *
+ * 只交换 PREV / NEXT，MENU 仍为 PB3，不受影响。
+ * 该选项是编译期常量，修改后需要重新编译。
+ */
+#define PRESET_REVERT_PREV_NEXT       (1)
 
 /*
  * 热端电阻，单位 kΩ。
@@ -76,8 +92,8 @@ extern "C" {
  * 290     291        428.7
  * 300     301        416.7
  *
- * 当前使用 R7=200k，理论值  599.2°C。
- * 实际保护点提前 50°C： 549.2°C。
+ * 当前使用 R7=200k，理论值 599.2°C。
+ * 实际保护点提前 50°C：549.2°C。
  * 换 R7 时按表中理论值减 50 后只改下面这一个值。
  */
 #define PRESET_TC_OPEN_TEMP_C         (549.2f)
