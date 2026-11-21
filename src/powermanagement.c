@@ -1034,7 +1034,7 @@ static void power_pd_watchdog(uint32_t now_ms)
 
       if((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_FAULT_MS)
       {
-        if(power_vin_matches_index(index) != 0U)
+        if(power_vin_matches_index(index) == 0U)
         {
           power_pd_attempts++;
 
@@ -1066,6 +1066,7 @@ static void power_pd_watchdog(uint32_t now_ms)
         }
         else
         {
+          /* 实测 VBUS 已经落在目标档窗口内：这轮纠偏成功，回到正常监控 */
           power_pd_action = POWER_PD_MONITOR;
           power_pd_bad_since_ms = 0U;
           power_pd_attempts = 0U;
