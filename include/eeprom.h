@@ -56,7 +56,7 @@ typedef struct
   float voltage_recovery_ms;
 
   uint8_t ch224a_index;
-  uint8_t maindash_alt;
+  uint8_t maindash_alt;         /* 已废弃：ALT DASH 备用主界面已删除，字段保留占位，勿复用 */
   uint8_t ui_light;
   uint8_t display_left_hand;
   uint8_t boot_hold_enabled;

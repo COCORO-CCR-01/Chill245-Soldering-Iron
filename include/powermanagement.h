@@ -27,10 +27,36 @@ extern "C" {
 #define POWER_DEFAULT_VOLTAGE_RECOVERY_MS       (2000U)
 #define POWER_VOLTAGE_STARTUP_GRACE_MS          (2000U)
 
-/* CH224A */
+/* CH224A
+ *
+ * 注意：i2c_7bit_address_send() 内部只做 (addr & 0xFE)，不会帮你左移，
+ * 所以传进去的必须是"预移位 8 位地址"。原来直接传 0x22 会让总线上发出
+ * 7 位地址 0x11，CH224A 永远不应答 —— 这是本固件通讯不通的根因。
+ * 实测：总线上 0x44(7 位 0x22) 和 0x46(7 位 0x23) 都会应答。 */
+#define POWER_CH224A_ADDR_7BIT_PRIMARY          (0x22U)
+#define POWER_CH224A_ADDR_7BIT_SECONDARY        (0x23U)
+#define POWER_CH224A_I2C_ADDR_PRIMARY           (POWER_CH224A_ADDR_7BIT_PRIMARY << 1)   /* 0x44 */
+#define POWER_CH224A_I2C_ADDR_SECONDARY         (POWER_CH224A_ADDR_7BIT_SECONDARY << 1) /* 0x46 */
+
+#define POWER_CH224A_REG_STATUS                 (0x09U)
 #define POWER_CH224A_REG_VOLTAGE                (0x0AU)
-#define POWER_CH224A_I2C_ADDR_PRIMARY           (0x22U)
-#define POWER_CH224A_I2C_ADDR_SECONDARY         (0x23U)
+#define POWER_CH224A_REG_CURRENT_LIMIT          (0x50U)   /* 单位 50 mA */
+
+/* 0x09 状态位（实测：未插 PD = 0x00；插入 = 0x48；档位切换成功 = 0xC8） */
+#define POWER_CH224A_STATUS_PD                  (0x08U)   /* 已建立 PD 合同 */
+#define POWER_CH224A_STATUS_CONTRACT_READY      (0x80U)   /* 合同已确认，此时 0x0A 请求才生效 */
+
+/* 档位索引 */
+#define POWER_CH224A_INDEX_5V                   (0U)
+#define POWER_CH224A_INDEX_9V                   (1U)
+#define POWER_CH224A_INDEX_12V                  (2U)
+#define POWER_CH224A_INDEX_15V                  (3U)
+#define POWER_CH224A_INDEX_20V                  (4U)
+#define POWER_CH224A_INDEX_28V                  (5U)
+/* 上电第一次写 0x0A 会被 CH224A 吞掉，用这一档把合同 commit 掉。
+ * 选 9V 是因为 CFG1=205k 单电阻模式的默认档就是 9V，来回切换最安全。 */
+#define POWER_CH224A_INDEX_COMMIT               POWER_CH224A_INDEX_9V
+
 #define POWER_CH224A_DEFAULT_VOLTAGE_V          (20.0f)
 
 typedef enum
@@ -195,6 +221,45 @@ void power_set_voltage_recovery_time_ms(uint32_t ms);
 float power_get_ch224a_voltage(void);
 uint8_t power_ch224a_set_voltage(float volts);
 uint8_t power_ch224a_set_voltage_index(uint8_t index);
+
+/**
+  * @brief  协商到指定档位（带 commit + 输入电压回读校验）
+  * @param  index: 0..5 = 5/9/12/15/20/28 V
+  * @retval 1 已确认到位；0 未到位（供电方没有这一档，或 CH224A 不在线）
+  * @note   阻塞，最坏约 3.2 s，只适合在上电/菜单里调用；周期纠偏走 power_update。
+  *         CH224A 的 0x09 有两个状态：0x48 = 收到 Source_Capabilities 但合同未确认，
+  *         0xC8(bit7) = 合同已确认。上电后第一次写 0x0A 会被吞掉，所以这里先写
+  *         一档把合同 commit，再打真正的目标档，最后用 PA2 实测 VBUS 确认。
+  *         实测切换在写寄存器后 400 ms 内完成：20V = 19.86~19.92 V，
+  *         15V = 14.89~14.95 V，9V = 8.90~8.97 V。
+  */
+uint8_t power_ch224a_negotiate_index(uint8_t index);
+
+/**
+  * @brief  协商到指定电压（浮点接口，内部换算档位）
+  */
+uint8_t power_ch224a_negotiate(float volts);
+
+/**
+  * @brief  读 CH224A 寄存器（单字节；该芯片不支持一次多字节流式读）
+  * @retval 1 成功；0 失败（器件不应答或总线异常）
+  */
+uint8_t power_ch224a_read_reg(uint8_t reg, uint8_t *value);
+
+/**
+  * @brief  最近一次读到的 0x09 状态字节
+  */
+uint8_t power_ch224a_get_status(void);
+
+/**
+  * @brief  CH224A 是否在总线上（0x44 / 0x46 至少一个应答）
+  */
+uint8_t power_ch224a_is_present(void);
+
+/**
+  * @brief  当前正在维持的目标档位
+  */
+uint8_t power_ch224a_get_target_index(void);
 
 #ifdef __cplusplus
 }

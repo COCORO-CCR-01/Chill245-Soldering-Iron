@@ -3,21 +3,19 @@
   * @file     powermanagement.c
   * @brief    输入电压、震动休眠、电源保护和 CH224A 电压诱骗
   **************************************************************************
-  * 硬件：
-  *   PA2  -> V-ADC，V-ADC = VCC * 1/(10+1)，VCC = V-ADC * 11
-  *   PB1  -> 震动开关 SLEEP，3V3 -> 10k -> PB1 -> 开关 -> GND
+  * 纭欢锛?  *   PA2  -> V-ADC锛孷-ADC = VCC * 1/(10+1)锛孷CC = V-ADC * 11
+  *   PB1  -> 闇囧姩寮€鍏?SLEEP锛?V3 -> 10k -> PB1 -> 寮€鍏?-> GND
   *   PB6  -> I2C1_SCL -> CH224A
   *   PB7  -> I2C1_SDA -> CH224A
   *
-  * 休眠流程：
-  *   ACTIVE --静止超时--> REDUCED --继续静止超时--> HEATER_OFF
-  *          --继续静止超时--> BACKLIGHT_OFF
+  * 浼戠湢娴佺▼锛?  *   ACTIVE --闈欐瓒呮椂--> REDUCED --缁х画闈欐瓒呮椂--> HEATER_OFF
+  *          --缁х画闈欐瓒呮椂--> BACKLIGHT_OFF
   *
-  * REDUCED / HEATER_OFF 或手动 DISABLED 状态检测到震动可唤醒；BACKLIGHT_OFF 只能按键唤醒。
-  **************************************************************************
+  * REDUCED / HEATER_OFF 鎴栨墜鍔?DISABLED 鐘舵€佹娴嬪埌闇囧姩鍙敜閱掞紱BACKLIGHT_OFF 鍙兘鎸夐敭鍞ら啋銆?  **************************************************************************
   */
 
 #include "powermanagement.h"
+#include "adc.h"
 #include "at32f421_conf.h"
 #include "buttons.h"
 #include "display.h"
@@ -32,6 +30,19 @@
 #define POWER_LOW_POWER_DEFAULT         (13U)
 #define POWER_I2C_TIMEOUT               (100000U)
 #define POWER_MIN_TIMEOUT_MS            (1000U)
+
+/* CH224A 鍗忓晢鏃跺簭锛堝叏閮ㄦ潵鑷澘涓婂疄娴嬶紝涓嶆槸 datasheet 鎺ㄦ祴锛?*/
+#define POWER_CH224A_SETTLE_MS          (1200U)   /* 瀹炴祴 400 ms 鍐呭畬鎴愶紝鐣?3 鍊嶄綑閲?*/
+#define POWER_CH224A_POLL_MS            (50U)
+#define POWER_CH224A_COMMIT_MS          (300U)
+#define POWER_CH224A_ATTEMPTS           (2U)
+/* 瀹炴祴 20V=19.86~19.92V / 15V=14.89~14.95V / 9V=8.90~8.97V锛? * 卤12% 鏃㈣兘瀹逛笅娴嬮噺璇樊锛屽張鑳戒竴鐪肩湅鍑?鏍规湰娌″垏妗? */
+#define POWER_CH224A_TOLERANCE_PCT      (12U)
+/* 鍛ㄦ湡绾犲亸锛歏BUS 鍋忕鐩爣瓒呰繃瀹瑰樊涓旀寔缁繖涔堜箙鎵嶅姩鎵嬶紝閬垮厤鍒囨崲杩囩▼璇Е鍙戙€? * 寮€鏈虹涓€娆℃妸 9V 璋堝埌 20V 涔熻蛋杩欐潯璺緞锛屾墍浠ヤ笉瑕佸お闀裤€?*/
+#define POWER_PD_FAULT_MS               (1500U)
+#define POWER_PD_STEP_MS                (350U)
+#define POWER_PD_BACKOFF_MS             (15000U)
+#define POWER_PD_MAX_ATTEMPTS           (2U)
 
 static power_state_t power_state;
 static power_fault_t power_fault;
@@ -76,12 +87,129 @@ static uint8_t power_initialized;
 static uint8_t power_ch224a_found;
 static uint8_t power_ch224a_address;
 static float power_ch224a_voltage_v;
+static uint8_t power_ch224a_status;
+static uint8_t power_ch224a_target_index = POWER_CH224A_INDEX_20V;
+
+/* PD 妗ｄ綅淇濇寔鐘舵€佹満锛氶潪闃诲锛屾瘡涓?power_update tick 鍙蛋涓€灏忔锛屾瘡姝ュ彧鏄竴娆? * 涓夊瓧鑺?I2C 浜嬪姟锛堝嚑鍗?us锛夛紝涓嶄細鍗′綇鏄剧ず鍜屽姞鐑€?*/
+typedef enum
+{
+  POWER_PD_MONITOR = 0,   /* 姝ｅ父鐩戞帶 */
+  POWER_PD_COMMIT,        /* 宸插洖鍐?commit 妗ｏ紝绛夊悎鍚岄噸鏂扮‘璁?*/
+  POWER_PD_REQUEST,       /* 已重写目标档，等 VBUS 到位 */
+  POWER_PD_GIVE_UP        /* 鏈疆涓嶅啀灏濊瘯锛岄殧涓€娈垫椂闂村啀鏉ョ湅 */
+} power_pd_action_t;
+
+static power_pd_action_t power_pd_action;
+static uint32_t power_pd_bad_since_ms;
+static uint32_t power_pd_step_ms;
+static uint8_t power_pd_attempts;
 
 static uint8_t power_read_vibration_level(void);
+
+/* ---------------------------------------------------------------------------
+ * CH224A 璋冭瘯鎵撳嵃銆傞粯璁ゅ叧闂紝鍏抽棴鏃惰繖浜涗唬鐮佷笉浼氳繘鍥轰欢銆? * 鎵撳紑鍚庝粠 H2 涓插彛锛圲SART1 115200 8N1锛屽拰鍒锋満 / logo 涓婁紶鍚屼竴涓彛锛夋墦鍗?PD
+ * 鐘舵€佸彉鍖栵紝鎻掍笂 PD 澶村氨鑳界洿鎺ョ湅鍒?鎺㈡祴 -> commit -> 璇锋眰 -> 鏍￠獙"鐨勮繃绋嬨€? * 娉ㄦ剰锛歭ogo 涓婁紶璧扮殑鏄悓涓€涓覆鍙ｏ紝璋冭瘯鏈熼棿鍒悓鏃朵笂浼?logo銆? * ------------------------------------------------------------------------- */
+#define POWER_CH224A_DEBUG              (1U)
+
+#if POWER_CH224A_DEBUG
+static void power_dbg_char(char c)
+{
+  uint32_t guard = 200000U;
+
+  /* 鏈夌晫绛夊緟锛歎SART1 鏃堕挓娌″紑鏃舵爣蹇椾綅姘歌繙璇讳笉鍒帮紝涓嶈兘姝荤瓑 */
+  while((usart_flag_get(USART1, USART_TDBE_FLAG) == RESET) && (guard != 0U))
+  {
+    guard--;
+  }
+
+  usart_data_transmit(USART1, (uint16_t)(uint8_t)c);
+}
+
+static void power_dbg_str(const char *text)
+{
+  while(*text != '\0')
+  {
+    power_dbg_char(*text);
+    text++;
+  }
+}
+
+static void power_dbg_hex8(uint8_t value)
+{
+  static const char digits[] = "0123456789ABCDEF";
+
+  power_dbg_char(digits[(value >> 4) & 0x0FU]);
+  power_dbg_char(digits[value & 0x0FU]);
+}
+
+static void power_dbg_dec(uint32_t value)
+{
+  char buf[10];
+  uint8_t n = 0U;
+
+  do
+  {
+    buf[n] = (char)('0' + (uint8_t)(value % 10U));
+    n++;
+    value /= 10U;
+  } while((value != 0U) && (n < sizeof(buf)));
+
+  while(n != 0U)
+  {
+    n--;
+    power_dbg_char(buf[n]);
+  }
+}
+
+/* power_init 比 bootlogo 的串口初始化还早，调试打印要自己把 USART1 带起来。
+ * 参数和 bootlogo_uart_init() 完全一致（PA9/PA10 MUX_1、115200 8N1），所以
+ * 后面 bootlogo 再初始化一次也是同样的配置，两边不冲突。 */
+static void power_dbg_init(void)
+{
+  gpio_init_type gpio_init_struct;
+
+  crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_USART1_PERIPH_CLOCK, TRUE);
+
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_pins = GPIO_PINS_9 | GPIO_PINS_10;
+  gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+  gpio_init_struct.gpio_pull = GPIO_PULL_UP;
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+  gpio_init(GPIOA, &gpio_init_struct);
+
+  gpio_pin_mux_config(GPIOA, GPIO_PINS_SOURCE9, GPIO_MUX_1);
+  gpio_pin_mux_config(GPIOA, GPIO_PINS_SOURCE10, GPIO_MUX_1);
+
+  usart_init(USART1, 115200U, USART_DATA_8BITS, USART_STOP_1_BIT);
+  usart_transmitter_enable(USART1, TRUE);
+  usart_receiver_enable(USART1, TRUE);
+  usart_enable(USART1, TRUE);
+}
+
+static uint32_t power_dbg_hb_ms;
+
+#define POWER_DBG(text)                 power_dbg_str((text))
+#define POWER_DBG_HEX(value)            power_dbg_hex8((uint8_t)(value))
+#define POWER_DBG_DEC(value)            power_dbg_dec((uint32_t)(value))
+#define POWER_DBG_INIT()                power_dbg_init()
+#else
+#define POWER_DBG(text)                 do {} while(0)
+#define POWER_DBG_HEX(value)            do {} while(0)
+#define POWER_DBG_DEC(value)            do {} while(0)
+#define POWER_DBG_INIT()                do {} while(0)
+#endif
 
 static const float power_ch224a_voltage_table[6] =
 {
   5.0f, 9.0f, 12.0f, 15.0f, 20.0f, 28.0f
+};
+
+/* 鏁存暟妗ｄ綅琛細姣旇緝 VBUS 鐢ㄤ笉涓婃诞鐐癸紝鐪佹帀 __aeabi_fmul/__aeabi_f2uiz */
+static const uint16_t power_ch224a_voltage_mv_table[6] =
+{
+  5000U, 9000U, 12000U, 15000U, 20000U, 28000U
 };
 
 /* ------------------------------------------------------------------------- */
@@ -113,7 +241,79 @@ static uint8_t power_i2c_wait_flag(uint32_t flag, uint32_t timeout)
   return 1U;
 }
 
-static uint8_t power_ch224a_write_reg(uint8_t address, uint8_t reg, uint8_t value)
+static uint8_t power_ch224a_read_reg_addr(uint8_t address, uint8_t reg, uint8_t *value);
+static uint16_t power_measure_vin_mv(void);
+
+/* ---------------------------------------------------------------------------
+ * 鎬荤嚎鎭㈠ + I2C1 纭浣嶃€備袱绉嶅崱姝婚兘瑕佸鐞嗭細
+ *   1) 浠庢満鍦ㄦ帀鐢?鐑彃鎷旇繃绋嬩腑鎶?SDA 鍗″湪浣庣數骞?-> I2C1 姘歌繙 BUSY锛屽彧鏈夊閮? *      9 涓椂閽?+ STOP 鑳借瀹冩妸閭ｄ綅閲婃斁鎺夛紱
+ *   2) I2C1 鑷繁鍋滃湪鍗婄瑪浜嬪姟涓婏紙瀹炴祴绛惧悕锛氱涓€绗旇兘璇诲埌 0x09=0x48锛屼箣鍚庢瘡绗旈兘
+ *      鍦ㄥ湴鍧€闃舵瓒呮椂銆乻ts1=0040銆丼CL/SDA 浠嶆槸绌洪棽楂樼數骞筹級-> 澶嶄綅澶栬銆? * 椤哄簭锛氬厛鐢?GPIO 鎵嬫墦鏃堕挓鎶婁粠鏈烘斁寮€锛屽啀澶嶄綅閲嶆柊鍒濆鍖?I2C1銆? * ------------------------------------------------------------------------- */
+static void power_i2c_recover_bus(void)
+{
+  gpio_init_type gpio_init_struct;
+  uint8_t i;
+
+  i2c_enable(I2C1, FALSE);
+
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE6, GPIO_MUX_0);
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE7, GPIO_MUX_0);
+
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_pins = GPIO_PINS_6 | GPIO_PINS_7;
+  gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_OPEN_DRAIN;
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_MODERATE;
+  gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+  gpio_init(GPIOB, &gpio_init_struct);
+
+  gpio_bits_set(GPIOB, GPIO_PINS_6 | GPIO_PINS_7);
+  wk_delay_us(10U);
+
+  for(i = 0U; i < 9U; i++)
+  {
+    gpio_bits_reset(GPIOB, GPIO_PINS_6);
+    wk_delay_us(10U);
+    gpio_bits_set(GPIOB, GPIO_PINS_6);
+    wk_delay_us(10U);
+  }
+
+  /* STOP：SCL 为高期间 SDA 由低跳高 */
+  gpio_bits_reset(GPIOB, GPIO_PINS_7);
+  wk_delay_us(10U);
+  gpio_bits_set(GPIOB, GPIO_PINS_6);
+  wk_delay_us(10U);
+  gpio_bits_set(GPIOB, GPIO_PINS_7);
+  wk_delay_us(10U);
+
+  /* 关键：bit-bang 结束之后必须把引脚重新配回 GPIO_MODE_MUX，只改 mux 寄存器是
+   * 不够的 —— 模式还留在 GPIO_MODE_OUTPUT 的话，引脚是普通输出脚，I2C1 外设和
+   * 引脚之间是断开的，之后每一笔传输都发不出去（实测 found=0 就是这么来的）。
+   * 参数和 power_init 里的初始配置保持一致。 */
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_pins = GPIO_PINS_6 | GPIO_PINS_7;
+  gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+  gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_OPEN_DRAIN;
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_MODERATE;
+  gpio_init(GPIOB, &gpio_init_struct);
+
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE6, GPIO_MUX_1);
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE7, GPIO_MUX_1);
+
+  crm_periph_reset(CRM_I2C1_PERIPH_RESET, TRUE);
+  crm_periph_reset(CRM_I2C1_PERIPH_RESET, FALSE);
+  crm_periph_clock_enable(CRM_I2C1_PERIPH_CLOCK, TRUE);
+  i2c_init(I2C1, I2C_FSMODE_DUTY_2_1, 100000);
+  i2c_enable(I2C1, TRUE);
+  wk_delay_ms(2U);
+}
+
+/* AT32F421 的 I2C 在一笔事务结束后会在数据寄存器里留下一个没被读走的字节
+ * (RDBF)，状态机就停在那里，下一次 START 根本不会上线：既不报 NACK 也不报仲裁
+ * 丢失，状态寄存器里只有 0x0040，SCL/SDA 看着还是空闲高电平，非常难查。
+ * 板上实测签名：上电第一笔能正常读到 0x09 = 0x48，之后每一笔都在地址阶段超时。 */
+static uint8_t power_i2c_begin(void)
 {
   uint32_t timeout;
 
@@ -122,73 +322,263 @@ static uint8_t power_ch224a_write_reg(uint8_t address, uint8_t reg, uint8_t valu
     return 0U;
   }
 
+  if(i2c_flag_get(I2C1, I2C_RDBF_FLAG) != RESET)
+  {
+    (void)i2c_data_receive(I2C1);
+  }
+
+  if(i2c_flag_get(I2C1, I2C_ACKFAIL_FLAG) != RESET)
+  {
+    i2c_flag_clear(I2C1, I2C_ACKFAIL_FLAG);
+  }
+
   timeout = POWER_I2C_TIMEOUT;
 
   while(i2c_flag_get(I2C1, I2C_BUSYF_FLAG) != RESET)
   {
     if(timeout == 0U)
     {
+      power_i2c_recover_bus();
       return 0U;
     }
 
     timeout--;
   }
 
-  i2c_start_generate(I2C1);
-
-  if(power_i2c_wait_flag(I2C_STARTF_FLAG, POWER_I2C_TIMEOUT) == 0U)
-  {
-    return 0U;
-  }
-
-  i2c_7bit_address_send(I2C1, address, I2C_DIRECTION_TRANSMIT);
-
-  if(power_i2c_wait_flag(I2C_ADDR7F_FLAG, POWER_I2C_TIMEOUT) == 0U)
-  {
-    return 0U;
-  }
-
-  i2c_flag_clear(I2C1, I2C_ADDR7F_FLAG);
-
-  if(power_i2c_wait_flag(I2C_TDBE_FLAG, POWER_I2C_TIMEOUT) == 0U)
-  {
-    return 0U;
-  }
-
-  i2c_data_send(I2C1, reg);
-
-  if(power_i2c_wait_flag(I2C_TDBE_FLAG, POWER_I2C_TIMEOUT) == 0U)
-  {
-    return 0U;
-  }
-
-  i2c_data_send(I2C1, value);
-
-  if(power_i2c_wait_flag(I2C_TDC_FLAG, POWER_I2C_TIMEOUT) == 0U)
-  {
-    return 0U;
-  }
-
-  i2c_stop_generate(I2C1);
-  wk_delay_us(10U);
   return 1U;
 }
 
+/* 浜嬪姟鏀跺熬銆備笂闈㈤偅绉嶉攣姝诲彧鍦?鎴愬姛浜嬪姟涔嬪悗"鍑虹幇锛屽疄娴嬪彧鏈夐噸鏂颁娇鑳藉璁炬墠鑳? * 鎶婄姸鎬佹満鎷夊洖骞插噣鐘舵€侊紱CH224A 姣忕鏈€澶氳璁块棶鍑犳锛屼唬浠峰彲浠ュ拷鐣ャ€?*/
+static void power_i2c_end(void)
+{
+  i2c_stop_generate(I2C1);
+  wk_delay_us(10U);
+
+  i2c_enable(I2C1, FALSE);
+  wk_delay_us(20U);
+  i2c_enable(I2C1, TRUE);
+  wk_delay_us(10U);
+}
+
+static uint8_t power_ch224a_write_reg(uint8_t address, uint8_t reg, uint8_t value)
+{
+  uint8_t attempt;
+
+  for(attempt = 0U; attempt < 2U; attempt++)
+  {
+    if(power_i2c_begin() == 0U)
+    {
+      continue;
+    }
+
+    i2c_start_generate(I2C1);
+
+    if(power_i2c_wait_flag(I2C_STARTF_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    /* 传预移位地址：见 powermanagement.h 里 POWER_CH224A_I2C_ADDR_* 的说明 */
+    i2c_7bit_address_send(I2C1, address, I2C_DIRECTION_TRANSMIT);
+
+    if(power_i2c_wait_flag(I2C_ADDR7F_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    /* 必须释放 ADDR（先读 STS1 再读 STS2 那个序列）。不释放的话外设会自己
+     * 把 SCL 钳在低电平，后面所有传输全部超时，而且不报任何错误。 */
+    i2c_flag_clear(I2C1, I2C_ADDR7F_FLAG);
+
+    if(power_i2c_wait_flag(I2C_TDBE_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_data_send(I2C1, reg);
+
+    if(power_i2c_wait_flag(I2C_TDC_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    if(power_i2c_wait_flag(I2C_TDBE_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_data_send(I2C1, value);
+
+    if(power_i2c_wait_flag(I2C_TDC_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    power_i2c_end();
+    return 1U;
+  }
+
+  return 0U;
+}
+
+/* 读一个寄存器。两条实测结论：
+ * 1) 单字节读的 NACK 必须在释放 ADDR 之前就关好，否则从机会多被时钟一个字节，
+ * 传输永远等不到结束，读回来的是 0；
+ * 2) CH224A 不支持一次多字节的流式读：RESTART 之后第一个字节是有效数据，之后
+ * 继续时钟读到的全部是 0xFF。所以读 N 个寄存器就要调用 N 次本函数。 */
+static uint8_t power_ch224a_read_reg_addr(uint8_t address, uint8_t reg, uint8_t *value)
+{
+  uint8_t attempt;
+
+  for(attempt = 0U; attempt < 2U; attempt++)
+  {
+    if(power_i2c_begin() == 0U)
+    {
+      continue;
+    }
+
+    /* 绗竴娈碉細鍐欏瘎瀛樺櫒鎸囬拡 */
+    i2c_start_generate(I2C1);
+
+    if(power_i2c_wait_flag(I2C_STARTF_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_7bit_address_send(I2C1, address, I2C_DIRECTION_TRANSMIT);
+
+    if(power_i2c_wait_flag(I2C_ADDR7F_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_flag_clear(I2C1, I2C_ADDR7F_FLAG);
+
+    if(power_i2c_wait_flag(I2C_TDBE_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_data_send(I2C1, reg);
+
+    if(power_i2c_wait_flag(I2C_TDC_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    /* 绗簩娈碉細RESTART 杞 */
+    i2c_start_generate(I2C1);
+
+    if(power_i2c_wait_flag(I2C_STARTF_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_7bit_address_send(I2C1, address, I2C_DIRECTION_RECEIVE);
+
+    if(power_i2c_wait_flag(I2C_ADDR7F_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      i2c_ack_enable(I2C1, TRUE);
+      power_i2c_end();
+      continue;
+    }
+
+    i2c_ack_enable(I2C1, FALSE);         /* 鍏堝洖 NACK锛屽啀鏀?ADDR */
+    i2c_flag_clear(I2C1, I2C_ADDR7F_FLAG);
+    i2c_stop_generate(I2C1);             /* 鍗曞瓧鑺傝锛歋TOP 鎻愬墠鎸備笂 */
+
+    if(power_i2c_wait_flag(I2C_RDBF_FLAG, POWER_I2C_TIMEOUT) == 0U)
+    {
+      i2c_ack_enable(I2C1, TRUE);
+      power_i2c_end();
+      continue;
+    }
+
+    *value = (uint8_t)i2c_data_receive(I2C1);
+
+    i2c_ack_enable(I2C1, TRUE);
+    power_i2c_end();
+    return 1U;
+  }
+
+  return 0U;
+}
+
+/* 协商期间 power_update 不在跑，state machine 缓存的 vin_raw 是旧的，
+ * 所以这里直接阻塞采一次 PA2。 */
+static uint16_t power_measure_vin_mv(void)
+{
+  adc_raw_data_t raw;
+
+  adc_read_all(&raw);
+
+  if(raw.valid == 0U)
+  {
+    return power_voltage_mv;
+  }
+
+  return power_vin_raw_to_mv(raw.vin);
+}
+
+/* 判断实测 VBUS 是不是已经落在目标档的容差窗口内。
+ * 用 power_voltage_mv 缓存（power_voltage_task 每 10 ms 刷新一次；阻塞协商时
+ * power_ch224a_negotiate_index 自己刷新），这样周期纠偏不会去碰 ADC。 */
+static uint8_t power_vin_matches_index(uint8_t index)
+{
+  uint32_t target_mv;
+  uint32_t window_mv;
+  uint32_t vbus;
+
+  if(index > 5U)
+  {
+    return 0U;
+  }
+
+  target_mv = (uint32_t)power_ch224a_voltage_mv_table[index];
+  window_mv = (target_mv * POWER_CH224A_TOLERANCE_PCT) / 100U;
+  vbus = (uint32_t)power_voltage_mv;
+
+  if((vbus + window_mv >= target_mv) &&
+     (vbus <= target_mv + window_mv))
+  {
+    return 1U;
+  }
+
+  return 0U;
+}
+
+/* 鎺㈡祴鏀圭敤"璇?0x09"銆傚師鏉ョ敤"鍐?20V"褰撴帰娴嬫湁涓や釜闂锛氶偅鏄笂鐢典箣鍚庣殑绗竴娆? * 0x0A 鍐欙紝CH224A 浼氱洿鎺ュ悶鎺夛紙瑙?power_ch224a_negotiate_index锛夛紝鎺㈡祴鎶ユ垚鍔? * 鍗存病鏈変换浣曞崗鍟嗘晥鏋滐紱鑰屼笖涓€鏃﹀け璐ワ紝杩炶姱鐗囧埌搴曞湪涓嶅湪绾块兘璇讳笉鍑烘潵銆?*/
 static uint8_t power_ch224a_find(void)
 {
-  /* 先写 20V 作为探测，同时把默认电压设好 */
-  if(power_ch224a_write_reg(POWER_CH224A_I2C_ADDR_PRIMARY,
-                            POWER_CH224A_REG_VOLTAGE, 4U) != 0U)
+  uint8_t status;
+
+  status = 0U;
+
+  if(power_ch224a_read_reg_addr(POWER_CH224A_I2C_ADDR_PRIMARY,
+                                POWER_CH224A_REG_STATUS, &status) != 0U)
   {
     power_ch224a_address = POWER_CH224A_I2C_ADDR_PRIMARY;
+    power_ch224a_status = status;
     power_ch224a_found = 1U;
     return 1U;
   }
 
-  if(power_ch224a_write_reg(POWER_CH224A_I2C_ADDR_SECONDARY,
-                            POWER_CH224A_REG_VOLTAGE, 4U) != 0U)
+  if(power_ch224a_read_reg_addr(POWER_CH224A_I2C_ADDR_SECONDARY,
+                                POWER_CH224A_REG_STATUS, &status) != 0U)
   {
     power_ch224a_address = POWER_CH224A_I2C_ADDR_SECONDARY;
+    power_ch224a_status = status;
     power_ch224a_found = 1U;
     return 1U;
   }
@@ -197,9 +587,343 @@ static uint8_t power_ch224a_find(void)
   return 0U;
 }
 
+/* 浮点电压 -> 档位索引。CH224A 是固定档位，没有 24V，24V 请求落到 20V 档。 */
+static uint8_t power_ch224a_index_of(float volts)
+{
+  if(volts <= 5.0f)
+  {
+    return POWER_CH224A_INDEX_5V;
+  }
+
+  if(volts <= 9.0f)
+  {
+    return POWER_CH224A_INDEX_9V;
+  }
+
+  if(volts <= 12.0f)
+  {
+    return POWER_CH224A_INDEX_12V;
+  }
+
+  if(volts <= 15.0f)
+  {
+    return POWER_CH224A_INDEX_15V;
+  }
+
+  if(volts <= 20.0f)
+  {
+    return POWER_CH224A_INDEX_20V;
+  }
+
+  if(volts <= 28.0f)
+  {
+    return POWER_CH224A_INDEX_28V;
+  }
+
+  return 0xFFU;
+}
+
+uint8_t power_ch224a_negotiate_index(uint8_t index)
+{
+  uint8_t attempt;
+  uint8_t poll;
+  uint8_t status;
+
+  if(index > 5U)
+  {
+    return 0U;
+  }
+
+  power_ch224a_target_index = index;
+
+  if(power_ch224a_found == 0U)
+  {
+    if(power_ch224a_find() == 0U)
+    {
+      return 0U;
+    }
+  }
+
+  for(attempt = 0U; attempt < POWER_CH224A_ATTEMPTS; attempt++)
+  {
+    if(power_ch224a_write_reg(power_ch224a_address,
+                              POWER_CH224A_REG_VOLTAGE, index) == 0U)
+    {
+      power_ch224a_found = 0U;
+      return 0U;
+    }
+
+    for(poll = 0U; poll < (POWER_CH224A_SETTLE_MS / POWER_CH224A_POLL_MS); poll++)
+    {
+      wk_delay_ms(POWER_CH224A_POLL_MS);
+
+      status = 0U;
+      (void)power_ch224a_read_reg_addr(power_ch224a_address,
+                                       POWER_CH224A_REG_STATUS, &status);
+      power_ch224a_status = status;
+
+      power_voltage_mv = power_measure_vin_mv();
+
+      if(((status & POWER_CH224A_STATUS_PD) != 0U) &&
+         (power_vin_matches_index(index) != 0U))
+      {
+        power_ch224a_voltage_v = power_ch224a_voltage_table[index];
+        power_pd_action = POWER_PD_MONITOR;
+        power_pd_bad_since_ms = 0U;
+        power_pd_attempts = 0U;
+        POWER_DBG("\r\n[pd] OK idx=");
+        POWER_DBG_DEC(index);
+        POWER_DBG(" st=0x");
+        POWER_DBG_HEX(status);
+        POWER_DBG(" mv=");
+        POWER_DBG_DEC(power_voltage_mv);
+        POWER_DBG("\r\n");
+        return 1U;
+      }
+    }
+
+    /* 娌″埌浣嶃€傚疄娴嬫渶甯歌鐨勫師鍥犳槸鍚堝悓杩樺仠鍦?0x48 娌℃湁琚‘璁わ紝姝ゆ椂鍐?0x0A 浼氳
+     * 蹇界暐锛氬厛鍥炲啓涓€妗ｆ妸鍚堝悓 commit锛?V 鏄?CFG1=205k 鍗曠數闃绘ā寮忕殑榛樿妗ｏ紝
+     * 鏉ュ洖鍒囨崲鏈€瀹夊叏锛夛紝涓嬩竴杞啀鎵撶湡姝ｇ殑鐩爣妗ｃ€?*/
+    POWER_DBG("\r\n[pd] try");
+    POWER_DBG_DEC(attempt);
+    POWER_DBG(" idx=");
+    POWER_DBG_DEC(index);
+    POWER_DBG(" st=0x");
+    POWER_DBG_HEX(power_ch224a_status);
+    POWER_DBG(" mv=");
+    POWER_DBG_DEC(power_voltage_mv);
+    POWER_DBG(" -> commit\r\n");
+    (void)power_ch224a_write_reg(power_ch224a_address,
+                                 POWER_CH224A_REG_VOLTAGE,
+                                 POWER_CH224A_INDEX_COMMIT);
+    wk_delay_ms(POWER_CH224A_COMMIT_MS);
+  }
+
+  /* 鍒拌繖閲岃鏄庤繖涓緵鐢垫柟娌℃湁杩欎竴妗ｏ紝鎴栬€呮牴鏈笉鏄?PD 婧愩€備笉瑕佺户缁噸璇曪細
+   * 鍙嶅鎵撴柇 PD 鍗忓晢鍙細璁╄緭鍏ユ潵鍥炴姈锛屼氦缁欐瑺鍘嬩繚鎶ゅ拰 UI 鍘绘彁绀虹敤鎴锋崲澶淬€?*/
+  power_voltage_mv = power_measure_vin_mv();
+  power_ch224a_voltage_v = (float)power_voltage_mv / 1000.0f;
+
+  POWER_DBG("\r\n[pd] FAIL idx=");
+  POWER_DBG_DEC(index);
+  POWER_DBG(" st=0x");
+  POWER_DBG_HEX(power_ch224a_status);
+  POWER_DBG(" mv=");
+  POWER_DBG_DEC(power_voltage_mv);
+  POWER_DBG("\r\n");
+
+  return 0U;
+}
+
+uint8_t power_ch224a_negotiate(float volts)
+{
+  uint8_t index;
+
+  index = power_ch224a_index_of(volts);
+
+  if(index == 0xFFU)
+  {
+    return 0U;
+  }
+
+  return power_ch224a_negotiate_index(index);
+}
+
+/* PD 档位保持：实测档位会中途掉（例如 20V 被供电方退回 9V），输入电压和已请求
+ * 档位持续不一致时，重走一遍“commit 合同 -> 重写目标档 -> 校验 VBUS”。
+ * 
+ * 非阻塞：每个 tick 最多做一件事，正常情况只是比较一次电压。
+ * 5V 档不纠偏：CFG1=205k 单电阻模式没有 5V 配置，写 0 芯片会保持默认档，
+ * 纠偏只会白白打断合同。 */
+static void power_pd_watchdog(uint32_t now_ms)
+{
+  uint8_t index;
+
+  if(power_initialized == 0U)
+  {
+    return;
+  }
+
+  if(power_ch224a_found == 0U)
+  {
+    /* 鑺墖涓存椂涓嶅簲绛旓紙鎷旀彃 PD 婧愮殑涓€鐬棿浼氳繖鏍凤級锛氭寜閫€閬胯妭濂忛噸鏂版帰娴嬶紝
+     * 涓嶈兘灏辨姘歌繙鏀惧純锛屽惁鍒欓噸鏂版彃鍥炲幓妗ｄ綅灏卞啀涔熶笉浼氭仮澶嶄簡銆?*/
+    if((power_pd_step_ms == 0U) ||
+       ((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_BACKOFF_MS))
+    {
+      power_pd_step_ms = now_ms;
+      (void)power_ch224a_find();
+
+      POWER_DBG("\r\n[pd] reprobe found=");
+      POWER_DBG_DEC(power_ch224a_found);
+      POWER_DBG(" st=0x");
+      POWER_DBG_HEX(power_ch224a_status);
+      POWER_DBG(" mv=");
+      POWER_DBG_DEC(power_voltage_mv);
+      POWER_DBG("\r\n");
+    }
+
+    return;
+  }
+
+  index = power_ch224a_target_index;
+
+  if(index == POWER_CH224A_INDEX_5V)
+  {
+    power_pd_action = POWER_PD_MONITOR;
+    power_pd_bad_since_ms = 0U;
+    return;
+  }
+
+  switch(power_pd_action)
+  {
+    case POWER_PD_MONITOR:
+
+      if(power_vin_matches_index(index) == 0U)
+      {
+        if(power_pd_bad_since_ms == 0U)
+        {
+          power_pd_bad_since_ms = now_ms;
+        }
+        else if((uint32_t)(now_ms - power_pd_bad_since_ms) >= POWER_PD_FAULT_MS)
+        {
+          /* 鍏堟妸鍚堝悓 commit 涓€娆★細瀹炴祴 0x09 鍥炲埌 0x48 鏃剁洿鎺ュ啓鐩爣妗ｄ細琚拷鐣?*/
+          power_pd_bad_since_ms = 0U;
+          power_pd_attempts = 0U;
+
+          POWER_DBG("\r\n[pd] watchdog fix idx=");
+          POWER_DBG_DEC(index);
+          POWER_DBG(" mv=");
+          POWER_DBG_DEC(power_voltage_mv);
+          POWER_DBG("\r\n");
+
+          if(power_ch224a_write_reg(power_ch224a_address,
+                                    POWER_CH224A_REG_VOLTAGE,
+                                    POWER_CH224A_INDEX_COMMIT) != 0U)
+          {
+            power_pd_step_ms = now_ms;
+            power_pd_action = POWER_PD_COMMIT;
+          }
+          else
+          {
+            power_ch224a_found = 0U;
+          }
+        }
+      }
+      else
+      {
+        power_pd_bad_since_ms = 0U;
+        power_pd_attempts = 0U;
+#if POWER_CH224A_DEBUG
+        if((uint32_t)(now_ms - power_dbg_hb_ms) >= 5000U)
+        {
+          power_dbg_hb_ms = now_ms;
+          POWER_DBG("\r\n[pd] hb st=0x");
+          POWER_DBG_HEX(power_ch224a_status);
+          POWER_DBG(" mv=");
+          POWER_DBG_DEC(power_voltage_mv);
+          POWER_DBG("\r\n");
+        }
+#endif
+      }
+      break;
+
+    case POWER_PD_COMMIT:
+
+      if((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_STEP_MS)
+      {
+        if(power_ch224a_write_reg(power_ch224a_address,
+                                  POWER_CH224A_REG_VOLTAGE, index) != 0U)
+        {
+          power_pd_step_ms = now_ms;
+          power_pd_action = POWER_PD_REQUEST;
+          POWER_DBG("\r\n[pd] wd req idx=");
+          POWER_DBG_DEC(index);
+          POWER_DBG("\r\n");
+        }
+        else
+        {
+          power_ch224a_found = 0U;
+          power_pd_action = POWER_PD_MONITOR;
+        }
+      }
+      break;
+
+    case POWER_PD_REQUEST:
+
+      if((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_FAULT_MS)
+      {
+        if(power_vin_matches_index(index) != 0U)
+        {
+          power_pd_attempts++;
+
+          if(power_pd_attempts >= POWER_PD_MAX_ATTEMPTS)
+          {
+            /* 杩欎釜渚涚數鏂瑰ぇ姒傜巼娌℃湁杩欎竴妗ｏ紝閫€鍒板悗鍙帮紝闅斾竴娈垫椂闂村啀璇?*/
+            power_pd_step_ms = now_ms;
+            power_pd_action = POWER_PD_GIVE_UP;
+            POWER_DBG("\r\n[pd] wd GIVEUP idx=");
+            POWER_DBG_DEC(index);
+            POWER_DBG(" st=0x");
+            POWER_DBG_HEX(power_ch224a_status);
+            POWER_DBG(" mv=");
+            POWER_DBG_DEC(power_voltage_mv);
+            POWER_DBG("\r\n");
+          }
+          else if(power_ch224a_write_reg(power_ch224a_address,
+                                         POWER_CH224A_REG_VOLTAGE,
+                                         POWER_CH224A_INDEX_COMMIT) != 0U)
+          {
+            power_pd_step_ms = now_ms;
+            power_pd_action = POWER_PD_COMMIT;
+          }
+          else
+          {
+            power_ch224a_found = 0U;
+            power_pd_action = POWER_PD_MONITOR;
+          }
+        }
+        else
+        {
+          power_pd_action = POWER_PD_MONITOR;
+          power_pd_bad_since_ms = 0U;
+          power_pd_attempts = 0U;
+          POWER_DBG("\r\n[pd] wd OK idx=");
+          POWER_DBG_DEC(index);
+          POWER_DBG(" st=0x");
+          POWER_DBG_HEX(power_ch224a_status);
+          POWER_DBG(" mv=");
+          POWER_DBG_DEC(power_voltage_mv);
+          POWER_DBG("\r\n");
+        }
+      }
+      break;
+
+    default:
+
+      if((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_BACKOFF_MS)
+      {
+        power_pd_action = POWER_PD_MONITOR;
+        power_pd_bad_since_ms = 0U;
+      }
+      break;
+  }
+}
+
 uint8_t power_ch224a_set_voltage_index(uint8_t index)
 {
-  if(index > 5U)
+  return power_ch224a_negotiate_index(index);
+}
+
+uint8_t power_ch224a_set_voltage(float volts)
+{
+  return power_ch224a_negotiate(volts);
+}
+
+uint8_t power_ch224a_read_reg(uint8_t reg, uint8_t *value)
+{
+  if((value == NULL) || (power_initialized == 0U))
   {
     return 0U;
   }
@@ -212,56 +936,37 @@ uint8_t power_ch224a_set_voltage_index(uint8_t index)
     }
   }
 
-  if(power_ch224a_write_reg(power_ch224a_address,
-                            POWER_CH224A_REG_VOLTAGE, index) == 0U)
+  if(power_ch224a_read_reg_addr(power_ch224a_address, reg, value) == 0U)
   {
     power_ch224a_found = 0U;
     return 0U;
   }
 
-  power_ch224a_voltage_v = power_ch224a_voltage_table[index];
+  if(reg == POWER_CH224A_REG_STATUS)
+  {
+    power_ch224a_status = *value;
+  }
+
   return 1U;
 }
 
-uint8_t power_ch224a_set_voltage(float volts)
+uint8_t power_ch224a_get_status(void)
 {
-  uint8_t index;
+  return power_ch224a_status;
+}
 
-  if(volts <= 5.0f)
-  {
-    index = 0U;   /* 5V */
-  }
-  else if(volts <= 9.0f)
-  {
-    index = 1U;   /* 9V */
-  }
-  else if(volts <= 12.0f)
-  {
-    index = 2U;   /* 12V */
-  }
-  else if(volts <= 15.0f)
-  {
-    index = 3U;   /* 15V */
-  }
-  else if(volts <= 20.0f)
-  {
-    index = 4U;   /* 20V */
-  }
-  else if(volts <= 28.0f)
-  {
-    index = 5U;   /* 28V */
-  }
-  else
-  {
-    return 0U;
-  }
+uint8_t power_ch224a_is_present(void)
+{
+  return power_ch224a_found;
+}
 
-  /* CH224A 固定档位没有 24V；24V 请求会落到 20V 档 */
-  return power_ch224a_set_voltage_index(index);
+uint8_t power_ch224a_get_target_index(void)
+{
+  return power_ch224a_target_index;
 }
 
 /* ------------------------------------------------------------------------- */
-/* 电压、休眠、保护                                                           */
+/* 鐢靛帇銆佷紤鐪犮€佷繚鎶?                                                          */
 /* ------------------------------------------------------------------------- */
 
 uint16_t power_vin_raw_to_mv(uint16_t raw)
@@ -307,7 +1012,7 @@ uint8_t power_get_vibration_state(void)
 {
   uint32_t now_ms = sm_get_uptime_ms();
 
-  /* 只有稳定低电平才算震动，避免悬空/抖动误触发 */
+  /* 鍙湁绋冲畾浣庣數骞虫墠绠楅渿鍔紝閬垮厤鎮┖/鎶栧姩璇Е鍙?*/
   if(power_vibration_stable_level == 0U)
   {
     return 1U;
@@ -378,7 +1083,7 @@ static void power_enter_reduced(uint32_t now_ms)
 
   sm_get_status(&status);
 
-  /* 整定过程中不要改目标温度 */
+  /* 鏁村畾杩囩▼涓笉瑕佹敼鐩爣娓╁害 */
   if(status.autotune_state == PID_AUTOTUNE_RUNNING)
   {
     power_last_motion_ms = now_ms;
@@ -486,10 +1191,10 @@ static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
 
   now_ms = sm_get_uptime_ms();
 
-  /* 按键手动休眠后 30 s 内屏蔽震动唤醒，避免放下烙铁时立刻被震动叫醒 */
+  /* 鎸夐敭鎵嬪姩浼戠湢鍚?30 s 鍐呭睆钄介渿鍔ㄥ敜閱掞紝閬垮厤鏀句笅鐑欓搧鏃剁珛鍒昏闇囧姩鍙啋 */
   power_vibration_wake_block_until_ms = now_ms + POWER_MANUAL_SLEEP_WAKE_BLOCK_MS;
 
-  /* 手动休眠也要记住原设定温度，唤醒后恢复 */
+  /* 鎵嬪姩浼戠湢涔熻璁颁綇鍘熻瀹氭俯搴︼紝鍞ら啋鍚庢仮澶?*/
   if(power_saved_setpoint_valid == 0U)
   {
     power_saved_setpoint_c = sm_get_setpoint();
@@ -514,13 +1219,13 @@ static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
 
 void power_sleep(void)
 {
-  /* 菜单 SLEEP NOW：关加热+背光，唤醒恢复休眠前加热状态 */
+  /* 鑿滃崟 SLEEP NOW锛氬叧鍔犵儹+鑳屽厜锛屽敜閱掓仮澶嶄紤鐪犲墠鍔犵儹鐘舵€?*/
   power_sleep_common(1U, 1U);
 }
 
 void power_heater_off(void)
 {
-  /* 短按 PREV：只关加热，屏幕保持，唤醒后不自动恢复加热 */
+  /* 鐭寜 PREV锛氬彧鍏冲姞鐑紝灞忓箷淇濇寔锛屽敜閱掑悗涓嶈嚜鍔ㄦ仮澶嶅姞鐑?*/
   power_sleep_common(0U, 0U);
 }
 
@@ -602,11 +1307,11 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
-  /* 休眠计时只由震动/按键等活动输入重置，不再根据功率或温度误差推断使用状态 */
+  /* 浼戠湢璁℃椂鍙敱闇囧姩/鎸夐敭绛夋椿鍔ㄨ緭鍏ラ噸缃紝涓嶅啀鏍规嵁鍔熺巼鎴栨俯搴﹁宸帹鏂娇鐢ㄧ姸鎬?*/
 
   power_voltage_mv = power_vin_raw_to_mv(status.vin_raw);
 
-  /* 上电/CH224A 重新协商期间不触发保护 */
+  /* 涓婄數/CH224A 閲嶆柊鍗忓晢鏈熼棿涓嶈Е鍙戜繚鎶?*/
   if(now_ms < POWER_VOLTAGE_STARTUP_GRACE_MS)
   {
     power_voltage_bad_since_ms = 0U;
@@ -677,7 +1382,7 @@ static void power_on_button(button_id_t button, button_event_t event)
   }
 }
 
-/* 休眠时短按 NEXT 唤醒；NEXT 不再用 PRESS 唤醒，避免按下即翻页 */
+/* 浼戠湢鏃剁煭鎸?NEXT 鍞ら啋锛汵EXT 涓嶅啀鐢?PRESS 鍞ら啋锛岄伩鍏嶆寜涓嬪嵆缈婚〉 */
 static void power_on_next_click(button_id_t button, button_event_t event)
 {
   (void)button;
@@ -715,14 +1420,14 @@ void power_init(void)
 
   crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
 
-  /* PB1 震动开关，外部 10k 上拉，静止为高 */
+  /* PB1 闇囧姩寮€鍏筹紝澶栭儴 10k 涓婃媺锛岄潤姝负楂?*/
   gpio_default_para_init(&gpio_init_struct);
   gpio_init_struct.gpio_pins = GPIO_PINS_1;
   gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
   gpio_init_struct.gpio_pull = GPIO_PULL_UP;
   gpio_init(GPIOB, &gpio_init_struct);
 
-  /* CH224A I2C1：PB6=SCL，PB7=SDA，MUX_1，外部 1k 上拉 */
+  /* CH224A I2C1锛歅B6=SCL锛孭B7=SDA锛孧UX_1锛屽閮?1k 涓婃媺 */
   crm_periph_clock_enable(CRM_I2C1_PERIPH_CLOCK, TRUE);
 
   gpio_init_struct.gpio_pins = GPIO_PINS_6 | GPIO_PINS_7;
@@ -735,13 +1440,23 @@ void power_init(void)
   gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE6, GPIO_MUX_1);
   gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE7, GPIO_MUX_1);
 
-  i2c_init(I2C1, I2C_FSMODE_DUTY_2_1, 100000);
-  i2c_own_address1_set(I2C1, I2C_ADDRESS_MODE_7BIT, 0xA0);
-  i2c_enable(I2C1, TRUE);
+  /* 上电时 CH224A 可能正被上一次掉电打断，I2C1 也有概率停在半笔事务上，
+   * 症状是之后每一笔传输都在地址阶段超时。所以先复位外设再做一次总线恢复。
+   * 
+   * 原来这里还有一行 i2c_own_address1_set(I2C1, I2C_ADDRESS_MODE_7BIT, 0xA0)，
+   * 那是“本机作为从机”时的自身地址，设了之后 I2C1 会去应答总线上对 0x50 的
+   * 地址匹配，等于自己接自己发出去的东西。我们只做主机，删掉。 */
+  power_i2c_recover_bus();
 
   power_ch224a_found = 0U;
   power_ch224a_address = POWER_CH224A_I2C_ADDR_PRIMARY;
   power_ch224a_voltage_v = POWER_CH224A_DEFAULT_VOLTAGE_V;
+  power_ch224a_status = 0U;
+  power_ch224a_target_index = power_ch224a_index_of(POWER_CH224A_DEFAULT_VOLTAGE_V);
+  power_pd_action = POWER_PD_MONITOR;
+  power_pd_bad_since_ms = 0U;
+  power_pd_step_ms = 0U;
+  power_pd_attempts = 0U;
 
   power_state = POWER_STATE_ACTIVE;
   power_fault = POWER_FAULT_NONE;
@@ -771,8 +1486,22 @@ void power_init(void)
   (void)buttons_register_callback(BUTTON_NEXT, BUTTON_EVENT_CLICK,
                                   power_on_next_click);
 
-  /* 默认 20V；CH224A 固定档位没有 24V，24V 请求会落到 20V */
-  (void)power_ch224a_set_voltage(POWER_CH224A_DEFAULT_VOLTAGE_V);
+  /* 默认档位 20V，但不在上电路径里做阻塞协商：这时 sm_init()/adc_init() 还没跑，
+   * VBUS 测不到，协商没法校验，只会白等两三秒再报失败。目标 20V 和实测 9V 天然
+   * 就是“档位不一致”，power_pd_watchdog 会在开机头几秒（ADC 已活、PD 已 attach）
+   * 非阻塞地把它谈上来。这里只做一次探测，把芯片地址和 0x09 读出来。 */
+  POWER_DBG_INIT();
+  (void)power_ch224a_find();
+
+  POWER_DBG("\r\n[pd] init found=");
+  POWER_DBG_DEC(power_ch224a_found);
+  POWER_DBG(" addr=0x");
+  POWER_DBG_HEX(power_ch224a_address);
+  POWER_DBG(" st=0x");
+  POWER_DBG_HEX(power_ch224a_status);
+  POWER_DBG(" target=");
+  POWER_DBG_DEC(power_ch224a_target_index);
+  POWER_DBG("\r\n");
 }
 
 void power_update(uint32_t now_ms)
@@ -789,6 +1518,9 @@ void power_update(uint32_t now_ms)
   }
 
   power_voltage_task(now_ms);
+
+  /* CH224A 妗ｄ綅淇濇寔锛氳緭鍏ョ數鍘嬮暱鏈熷拰宸茶姹傛。浣嶄笉涓€鑷村氨閲嶆柊 commit + 璇锋眰銆?   * 闈為樆濉烇紝姝ｅ父鎯呭喌涓嬩竴 tick 鍙槸姣旇緝涓€娆＄數鍘嬨€?*/
+  power_pd_watchdog(now_ms);
 
   level = power_read_vibration_level();
   motion_activity = 0U;
@@ -823,7 +1555,7 @@ void power_update(uint32_t now_ms)
   switch(power_state)
   {
     case POWER_STATE_ACTIVE:
-      /* 休眠只看功率：≤15% 的功率占绝对多数才累积休眠时间 */
+      /* 浼戠湢鍙湅鍔熺巼锛氣墹15% 鐨勫姛鐜囧崰缁濆澶氭暟鎵嶇疮绉紤鐪犳椂闂?*/
       sm_get_status(&status);
       if(status.power <= power_low_power_threshold)
       {
@@ -863,7 +1595,7 @@ void power_update(uint32_t now_ms)
       if((motion_activity != 0U) &&
          ((int32_t)(power_vibration_wake_block_until_ms - now_ms) <= 0))
       {
-        /* 手动 disabled 状态下震动直接唤醒并恢复加热 */
+        /* 鎵嬪姩 disabled 鐘舵€佷笅闇囧姩鐩存帴鍞ら啋骞舵仮澶嶅姞鐑?*/
         power_wake_now(now_ms);
         (void)sm_set_heater_enabled(1U);
       }

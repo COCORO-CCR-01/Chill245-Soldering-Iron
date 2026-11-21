@@ -223,7 +223,6 @@ static const menu_item_t menu_ui_items[] =
   { "BUZZER",    MENU_ITEM_BOOL,  &menu_config.buzzer_enabled,   NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "VOLUME",    MENU_ITEM_FLOAT, &menu_config.buzzer_volume,    NULL, NULL, 0, 10.0f, 0.0f, 100.0f, 0U, "%", NULL },
   { "MAIN PAGE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_main_page },
-  { "ALT DASH",  MENU_ITEM_BOOL,  &menu_config.maindash_alt, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "LIGHT MODE", MENU_ITEM_BOOL, &menu_config.ui_light,      NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "LEFT HAND",  MENU_ITEM_BOOL, &menu_config.display_left_hand, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "BOOT LOGO", MENU_ITEM_FLOAT, &menu_config.bootlogo_delay_s, NULL, NULL, 0, 1.0f, 0.0f, 10.0f, 0U, "s", NULL },
