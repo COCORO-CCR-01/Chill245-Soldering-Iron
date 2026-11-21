@@ -3,15 +3,18 @@
   * @file     powermanagement.c
   * @brief    输入电压、震动休眠、电源保护和 CH224A 电压诱骗
   **************************************************************************
-  * 纭欢锛?  *   PA2  -> V-ADC锛孷-ADC = VCC * 1/(10+1)锛孷CC = V-ADC * 11
-  *   PB1  -> 闇囧姩寮€鍏?SLEEP锛?V3 -> 10k -> PB1 -> 寮€鍏?-> GND
+  * 硬件：
+  *   PA2  -> V-ADC，V-ADC = VCC * 1/(10+1)，VCC = V-ADC * 11
+  *   PB1  -> 震动开关 SLEEP，3V3 -> 10k -> PB1 -> 开关 -> GND
   *   PB6  -> I2C1_SCL -> CH224A
   *   PB7  -> I2C1_SDA -> CH224A
   *
-  * 浼戠湢娴佺▼锛?  *   ACTIVE --闈欐瓒呮椂--> REDUCED --缁х画闈欐瓒呮椂--> HEATER_OFF
-  *          --缁х画闈欐瓒呮椂--> BACKLIGHT_OFF
+  * 休眠流程：
+  *   ACTIVE --静止超时--> REDUCED --继续静止超时--> HEATER_OFF
+  *          --继续静止超时--> BACKLIGHT_OFF
   *
-  * REDUCED / HEATER_OFF 鎴栨墜鍔?DISABLED 鐘舵€佹娴嬪埌闇囧姩鍙敜閱掞紱BACKLIGHT_OFF 鍙兘鎸夐敭鍞ら啋銆?  **************************************************************************
+  * REDUCED / HEATER_OFF 或手动 DISABLED 状态检测到震动可唤醒；BACKLIGHT_OFF 只能按键唤醒。
+  * *************************************************************************
   */
 
 #include "powermanagement.h"
@@ -32,14 +35,16 @@
 #define POWER_I2C_TIMEOUT               (100000U)
 #define POWER_MIN_TIMEOUT_MS            (1000U)
 
-/* CH224A 鍗忓晢鏃跺簭锛堝叏閮ㄦ潵鑷澘涓婂疄娴嬶紝涓嶆槸 datasheet 鎺ㄦ祴锛?*/
-#define POWER_CH224A_SETTLE_MS          (1200U)   /* 瀹炴祴 400 ms 鍐呭畬鎴愶紝鐣?3 鍊嶄綑閲?*/
+/* CH224A 协商时序（全部来自板上实测，不是 datasheet 推测）*/
+#define POWER_CH224A_SETTLE_MS          (1200U)   /* 实测 400 ms 内完成，留 3 倍余量 */
 #define POWER_CH224A_POLL_MS            (50U)
 #define POWER_CH224A_COMMIT_MS          (300U)
 #define POWER_CH224A_ATTEMPTS           (2U)
-/* 瀹炴祴 20V=19.86~19.92V / 15V=14.89~14.95V / 9V=8.90~8.97V锛? * 卤12% 鏃㈣兘瀹逛笅娴嬮噺璇樊锛屽張鑳戒竴鐪肩湅鍑?鏍规湰娌″垏妗? */
+/* 实测 20V=19.86~19.92V / 15V=14.89~14.95V / 9V=8.90~8.97V，
+* ±12% 既能容下测量误差，又能一眼看出根本没切档 */
 #define POWER_CH224A_TOLERANCE_PCT      (12U)
-/* 鍛ㄦ湡绾犲亸锛歏BUS 鍋忕鐩爣瓒呰繃瀹瑰樊涓旀寔缁繖涔堜箙鎵嶅姩鎵嬶紝閬垮厤鍒囨崲杩囩▼璇Е鍙戙€? * 寮€鏈虹涓€娆℃妸 9V 璋堝埌 20V 涔熻蛋杩欐潯璺緞锛屾墍浠ヤ笉瑕佸お闀裤€?*/
+/* 周期纠偏：VBUS 偏离目标超过容差且持续这么久才动手，避免切换过程误触发。
+* 开机第一次把 9V 谈到 20V 也走这条路径，所以不要太长。*/
 #define POWER_PD_FAULT_MS               (1500U)
 #define POWER_PD_STEP_MS                (350U)
 #define POWER_PD_BACKOFF_MS             (15000U)
@@ -91,13 +96,14 @@ static float power_ch224a_voltage_v;
 static uint8_t power_ch224a_status;
 static uint8_t power_ch224a_target_index = POWER_CH224A_INDEX_20V;
 
-/* PD 妗ｄ綅淇濇寔鐘舵€佹満锛氶潪闃诲锛屾瘡涓?power_update tick 鍙蛋涓€灏忔锛屾瘡姝ュ彧鏄竴娆? * 涓夊瓧鑺?I2C 浜嬪姟锛堝嚑鍗?us锛夛紝涓嶄細鍗′綇鏄剧ず鍜屽姞鐑€?*/
+/* PD 档位保持状态机：非阻塞，每个 power_update tick 只走一小步，每步只是一次
+* 三字节 I2C 事务（几十 us），不会卡住显示和加热。*/
 typedef enum
 {
-  POWER_PD_MONITOR = 0,   /* 姝ｅ父鐩戞帶 */
-  POWER_PD_COMMIT,        /* 宸插洖鍐?commit 妗ｏ紝绛夊悎鍚岄噸鏂扮‘璁?*/
+  POWER_PD_MONITOR = 0,   /* 正常监控 */
+  POWER_PD_COMMIT,        /* 已回写 commit 档，等合同重新确认 */
   POWER_PD_REQUEST,       /* 已重写目标档，等 VBUS 到位 */
-  POWER_PD_GIVE_UP        /* 鏈疆涓嶅啀灏濊瘯锛岄殧涓€娈垫椂闂村啀鏉ョ湅 */
+  POWER_PD_GIVE_UP        /* 本轮不再尝试，隔一段时间再来看 */
 } power_pd_action_t;
 
 static power_pd_action_t power_pd_action;
@@ -108,8 +114,10 @@ static uint8_t power_pd_attempts;
 static uint8_t power_read_vibration_level(void);
 
 /* ---------------------------------------------------------------------------
- * CH224A 璋冭瘯鎵撳嵃銆傞粯璁ゅ叧闂紝鍏抽棴鏃惰繖浜涗唬鐮佷笉浼氳繘鍥轰欢銆? * 鎵撳紑鍚庝粠 H2 涓插彛锛圲SART1 115200 8N1锛屽拰鍒锋満 / logo 涓婁紶鍚屼竴涓彛锛夋墦鍗?PD
- * 鐘舵€佸彉鍖栵紝鎻掍笂 PD 澶村氨鑳界洿鎺ョ湅鍒?鎺㈡祴 -> commit -> 璇锋眰 -> 鏍￠獙"鐨勮繃绋嬨€? * 娉ㄦ剰锛歭ogo 涓婁紶璧扮殑鏄悓涓€涓覆鍙ｏ紝璋冭瘯鏈熼棿鍒悓鏃朵笂浼?logo銆? * ------------------------------------------------------------------------- */
+ * CH224A 调试打印。默认关闭，关闭时这些代码不会进固件。
+ * 打开后从 H2 串口（USART1 115200 8N1，和刷机 / logo 上传同一个口）打印 PD
+ * 状态变化，插上 PD 头就能直接看到“探测 -> commit -> 请求 -> 校验”的过程。
+ * 注意：logo 上传走的是同一个串口，调试期间别同时上传 logo。 */
 #define POWER_CH224A_DEBUG              (1U)
 
 #if POWER_CH224A_DEBUG
@@ -117,7 +125,7 @@ static void power_dbg_char(char c)
 {
   uint32_t guard = 200000U;
 
-  /* 鏈夌晫绛夊緟锛歎SART1 鏃堕挓娌″紑鏃舵爣蹇椾綅姘歌繙璇讳笉鍒帮紝涓嶈兘姝荤瓑 */
+  /* 有界等待：USART1 时钟没开的时候标志位永远读不到，不能死等 */
   while((usart_flag_get(USART1, USART_TDBE_FLAG) == RESET) && (guard != 0U))
   {
     guard--;
@@ -207,7 +215,7 @@ static const float power_ch224a_voltage_table[6] =
   5.0f, 9.0f, 12.0f, 15.0f, 20.0f, 28.0f
 };
 
-/* 鏁存暟妗ｄ綅琛細姣旇緝 VBUS 鐢ㄤ笉涓婃诞鐐癸紝鐪佹帀 __aeabi_fmul/__aeabi_f2uiz */
+/* 整数档位表：比较 VBUS 用不上浮点，省掉 __aeabi_fmul/__aeabi_f2uiz */
 static const uint16_t power_ch224a_voltage_mv_table[6] =
 {
   5000U, 9000U, 12000U, 15000U, 20000U, 28000U
@@ -246,10 +254,12 @@ static uint8_t power_ch224a_read_reg_addr(uint8_t address, uint8_t reg, uint8_t 
 static uint16_t power_measure_vin_mv(void);
 
 /* ---------------------------------------------------------------------------
- * 鎬荤嚎鎭㈠ + I2C1 纭浣嶃€備袱绉嶅崱姝婚兘瑕佸鐞嗭細
- *   1) 浠庢満鍦ㄦ帀鐢?鐑彃鎷旇繃绋嬩腑鎶?SDA 鍗″湪浣庣數骞?-> I2C1 姘歌繙 BUSY锛屽彧鏈夊閮? *      9 涓椂閽?+ STOP 鑳借瀹冩妸閭ｄ綅閲婃斁鎺夛紱
- *   2) I2C1 鑷繁鍋滃湪鍗婄瑪浜嬪姟涓婏紙瀹炴祴绛惧悕锛氱涓€绗旇兘璇诲埌 0x09=0x48锛屼箣鍚庢瘡绗旈兘
- *      鍦ㄥ湴鍧€闃舵瓒呮椂銆乻ts1=0040銆丼CL/SDA 浠嶆槸绌洪棽楂樼數骞筹級-> 澶嶄綅澶栬銆? * 椤哄簭锛氬厛鐢?GPIO 鎵嬫墦鏃堕挓鎶婁粠鏈烘斁寮€锛屽啀澶嶄綅閲嶆柊鍒濆鍖?I2C1銆? * ------------------------------------------------------------------------- */
+ * 总线恢复 + I2C1 硬复位。两种卡死都要处理：
+ *   1) 从机在掉电 / 热插拔过程中把 SDA 卡在低电平 -> I2C1 永远 BUSY，只有外部
+ *      9 个时钟 + STOP 能让它把那一位释放掉；
+ *   2) I2C1 自己停在半笔事务上（实测签名：上电第一笔能读到 0x09=0x48，之后每笔
+ *      在地址阶段超时、sts1=0040、SCL/SDA 仍是空闲高电平）-> 复位外设。
+ * 顺序：先用 GPIO 手打时钟把从机放开，再复位重新初始化 I2C1。 */
 static void power_i2c_recover_bus(void)
 {
   gpio_init_type gpio_init_struct;
@@ -349,7 +359,8 @@ static uint8_t power_i2c_begin(void)
   return 1U;
 }
 
-/* 浜嬪姟鏀跺熬銆備笂闈㈤偅绉嶉攣姝诲彧鍦?鎴愬姛浜嬪姟涔嬪悗"鍑虹幇锛屽疄娴嬪彧鏈夐噸鏂颁娇鑳藉璁炬墠鑳? * 鎶婄姸鎬佹満鎷夊洖骞插噣鐘舵€侊紱CH224A 姣忕鏈€澶氳璁块棶鍑犳锛屼唬浠峰彲浠ュ拷鐣ャ€?*/
+/* 事务收尾。上面那种锁死只在“成功事务之后”出现，实测只有重新使能外设才能
+* 把状态机拉回干净状态；CH224A 每秒最多被访问几次，代价可以忽略。*/
 static void power_i2c_end(void)
 {
   i2c_stop_generate(I2C1);
@@ -444,7 +455,7 @@ static uint8_t power_ch224a_read_reg_addr(uint8_t address, uint8_t reg, uint8_t 
       continue;
     }
 
-    /* 绗竴娈碉細鍐欏瘎瀛樺櫒鎸囬拡 */
+    /* 第一段：写寄存器指针 */
     i2c_start_generate(I2C1);
 
     if(power_i2c_wait_flag(I2C_STARTF_FLAG, POWER_I2C_TIMEOUT) == 0U)
@@ -495,9 +506,9 @@ static uint8_t power_ch224a_read_reg_addr(uint8_t address, uint8_t reg, uint8_t 
       continue;
     }
 
-    i2c_ack_enable(I2C1, FALSE);         /* 鍏堝洖 NACK锛屽啀鏀?ADDR */
+    i2c_ack_enable(I2C1, FALSE);         /* 先回 NACK，再清 ADDR */
     i2c_flag_clear(I2C1, I2C_ADDR7F_FLAG);
-    i2c_stop_generate(I2C1);             /* 鍗曞瓧鑺傝锛歋TOP 鎻愬墠鎸備笂 */
+    i2c_stop_generate(I2C1);             /* 单字节读：STOP 提前挂上 */
 
     if(power_i2c_wait_flag(I2C_RDBF_FLAG, POWER_I2C_TIMEOUT) == 0U)
     {
@@ -559,7 +570,9 @@ static uint8_t power_vin_matches_index(uint8_t index)
   return 0U;
 }
 
-/* 鎺㈡祴鏀圭敤"璇?0x09"銆傚師鏉ョ敤"鍐?20V"褰撴帰娴嬫湁涓や釜闂锛氶偅鏄笂鐢典箣鍚庣殑绗竴娆? * 0x0A 鍐欙紝CH224A 浼氱洿鎺ュ悶鎺夛紙瑙?power_ch224a_negotiate_index锛夛紝鎺㈡祴鎶ユ垚鍔? * 鍗存病鏈変换浣曞崗鍟嗘晥鏋滐紱鑰屼笖涓€鏃﹀け璐ワ紝杩炶姱鐗囧埌搴曞湪涓嶅湪绾块兘璇讳笉鍑烘潵銆?*/
+/* 探测改用“读 0x09”。原来用“写 20V”当探测有两个毛病：上电之后的第一次
+* 0x0A 写，CH224A 会直接吞掉（见 power_ch224a_negotiate_index），探测报成功
+* 却没有任何协商效果；而且一旦失败，连芯片到底在不在线都读不出来。*/
 static uint8_t power_ch224a_find(void)
 {
   uint8_t status;
@@ -683,9 +696,9 @@ uint8_t power_ch224a_negotiate_index(uint8_t index)
       }
     }
 
-    /* 娌″埌浣嶃€傚疄娴嬫渶甯歌鐨勫師鍥犳槸鍚堝悓杩樺仠鍦?0x48 娌℃湁琚‘璁わ紝姝ゆ椂鍐?0x0A 浼氳
-     * 蹇界暐锛氬厛鍥炲啓涓€妗ｆ妸鍚堝悓 commit锛?V 鏄?CFG1=205k 鍗曠數闃绘ā寮忕殑榛樿妗ｏ紝
-     * 鏉ュ洖鍒囨崲鏈€瀹夊叏锛夛紝涓嬩竴杞啀鎵撶湡姝ｇ殑鐩爣妗ｃ€?*/
+    /* 没到位。实测最常见的原因是合同还停在 0x48 没有被确认，此时写 0x0A 会被
+     * 忽略：先回写一档把合同 commit（9V 是 CFG1=205k 单电阻模式的默认档，
+     * 来回切换最安全），下一轮再打真正的目标档。*/
     POWER_DBG("\r\n[pd] try");
     POWER_DBG_DEC(attempt);
     POWER_DBG(" idx=");
@@ -701,8 +714,8 @@ uint8_t power_ch224a_negotiate_index(uint8_t index)
     wk_delay_ms(POWER_CH224A_COMMIT_MS);
   }
 
-  /* 鍒拌繖閲岃鏄庤繖涓緵鐢垫柟娌℃湁杩欎竴妗ｏ紝鎴栬€呮牴鏈笉鏄?PD 婧愩€備笉瑕佺户缁噸璇曪細
-   * 鍙嶅鎵撴柇 PD 鍗忓晢鍙細璁╄緭鍏ユ潵鍥炴姈锛屼氦缁欐瑺鍘嬩繚鎶ゅ拰 UI 鍘绘彁绀虹敤鎴锋崲澶淬€?*/
+  /* 到这里说明这个供电方没有这一档，或者根本不是 PD 源。不要继续重试：
+   * 反复打断 PD 协商只会让输入来回抖，交给欠压保护和 UI 去提示用户换头。*/
   power_voltage_mv = power_measure_vin_mv();
   power_ch224a_voltage_v = (float)power_voltage_mv / 1000.0f;
 
@@ -914,8 +927,8 @@ static void power_pd_watchdog(uint32_t now_ms)
 
   if(power_ch224a_found == 0U)
   {
-    /* 鑺墖涓存椂涓嶅簲绛旓紙鎷旀彃 PD 婧愮殑涓€鐬棿浼氳繖鏍凤級锛氭寜閫€閬胯妭濂忛噸鏂版帰娴嬶紝
-     * 涓嶈兘灏辨姘歌繙鏀惧純锛屽惁鍒欓噸鏂版彃鍥炲幓妗ｄ綅灏卞啀涔熶笉浼氭仮澶嶄簡銆?*/
+    /* 芯片临时不应答（拔插 PD 源的一瞬间会这样）：按退避节奏重新探测，
+     * 不能就此永远放弃，否则重新插回去档位就再也不会恢复了。*/
     if((power_pd_step_ms == 0U) ||
        ((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_BACKOFF_MS))
     {
@@ -955,7 +968,7 @@ static void power_pd_watchdog(uint32_t now_ms)
         }
         else if((uint32_t)(now_ms - power_pd_bad_since_ms) >= POWER_PD_FAULT_MS)
         {
-          /* 鍏堟妸鍚堝悓 commit 涓€娆★細瀹炴祴 0x09 鍥炲埌 0x48 鏃剁洿鎺ュ啓鐩爣妗ｄ細琚拷鐣?*/
+          /* 先把合同 commit 一次：实测 0x09 回到 0x48 时直接写目标档会被忽略 */
           power_pd_bad_since_ms = 0U;
           power_pd_attempts = 0U;
 
@@ -1027,7 +1040,7 @@ static void power_pd_watchdog(uint32_t now_ms)
 
           if(power_pd_attempts >= POWER_PD_MAX_ATTEMPTS)
           {
-            /* 杩欎釜渚涚數鏂瑰ぇ姒傜巼娌℃湁杩欎竴妗ｏ紝閫€鍒板悗鍙帮紝闅斾竴娈垫椂闂村啀璇?*/
+            /* 这个供电方大概率没有这一档，退到后台，隔一段时间再试 */
             power_pd_step_ms = now_ms;
             power_pd_action = POWER_PD_GIVE_UP;
             POWER_DBG("\r\n[pd] wd GIVEUP idx=");
@@ -1134,7 +1147,7 @@ uint8_t power_ch224a_get_target_index(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* 鐢靛帇銆佷紤鐪犮€佷繚鎶?                                                          */
+/* 电压、休眠、保护                                                           */
 /* ------------------------------------------------------------------------- */
 
 uint16_t power_vin_raw_to_mv(uint16_t raw)
@@ -1180,7 +1193,7 @@ uint8_t power_get_vibration_state(void)
 {
   uint32_t now_ms = sm_get_uptime_ms();
 
-  /* 鍙湁绋冲畾浣庣數骞虫墠绠楅渿鍔紝閬垮厤鎮┖/鎶栧姩璇Е鍙?*/
+  /* 只有稳定低电平才算震动，避免悬空/抖动误触发 */
   if(power_vibration_stable_level == 0U)
   {
     return 1U;
@@ -1251,7 +1264,7 @@ static void power_enter_reduced(uint32_t now_ms)
 
   sm_get_status(&status);
 
-  /* 鏁村畾杩囩▼涓笉瑕佹敼鐩爣娓╁害 */
+  /* 整定过程中不要改目标温度 */
   if(status.autotune_state == PID_AUTOTUNE_RUNNING)
   {
     power_last_motion_ms = now_ms;
@@ -1359,10 +1372,10 @@ static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
 
   now_ms = sm_get_uptime_ms();
 
-  /* 鎸夐敭鎵嬪姩浼戠湢鍚?30 s 鍐呭睆钄介渿鍔ㄥ敜閱掞紝閬垮厤鏀句笅鐑欓搧鏃剁珛鍒昏闇囧姩鍙啋 */
+  /* 按键手动休眠后 30 s 内屏蔽震动唤醒，避免放下烙铁时立刻被震动叫醒 */
   power_vibration_wake_block_until_ms = now_ms + POWER_MANUAL_SLEEP_WAKE_BLOCK_MS;
 
-  /* 鎵嬪姩浼戠湢涔熻璁颁綇鍘熻瀹氭俯搴︼紝鍞ら啋鍚庢仮澶?*/
+  /* 手动休眠也要记住原设定温度，唤醒后恢复 */
   if(power_saved_setpoint_valid == 0U)
   {
     power_saved_setpoint_c = sm_get_setpoint();
@@ -1387,13 +1400,13 @@ static void power_sleep_common(uint8_t screen_off, uint8_t restore_heater)
 
 void power_sleep(void)
 {
-  /* 鑿滃崟 SLEEP NOW锛氬叧鍔犵儹+鑳屽厜锛屽敜閱掓仮澶嶄紤鐪犲墠鍔犵儹鐘舵€?*/
+  /* 菜单 SLEEP NOW：关加热 + 背光，唤醒时恢复休眠前的加热状态 */
   power_sleep_common(1U, 1U);
 }
 
 void power_heater_off(void)
 {
-  /* 鐭寜 PREV锛氬彧鍏冲姞鐑紝灞忓箷淇濇寔锛屽敜閱掑悗涓嶈嚜鍔ㄦ仮澶嶅姞鐑?*/
+  /* 短按 PREV：只关加热，屏幕保持，唤醒后不自动恢复加热 */
   power_sleep_common(0U, 0U);
 }
 
@@ -1475,11 +1488,11 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
-  /* 浼戠湢璁℃椂鍙敱闇囧姩/鎸夐敭绛夋椿鍔ㄨ緭鍏ラ噸缃紝涓嶅啀鏍规嵁鍔熺巼鎴栨俯搴﹁宸帹鏂娇鐢ㄧ姸鎬?*/
+  /* 休眠计时只由震动/按键等活动输入重置，不再根据功率或温度误差推断使用状态 */
 
   power_voltage_mv = power_vin_raw_to_mv(status.vin_raw);
 
-  /* 涓婄數/CH224A 閲嶆柊鍗忓晢鏈熼棿涓嶈Е鍙戜繚鎶?*/
+  /* 上电/CH224A 重新协商期间不触发保护 */
   if(now_ms < POWER_VOLTAGE_STARTUP_GRACE_MS)
   {
     power_voltage_bad_since_ms = 0U;
@@ -1550,7 +1563,7 @@ static void power_on_button(button_id_t button, button_event_t event)
   }
 }
 
-/* 浼戠湢鏃剁煭鎸?NEXT 鍞ら啋锛汵EXT 涓嶅啀鐢?PRESS 鍞ら啋锛岄伩鍏嶆寜涓嬪嵆缈婚〉 */
+/* 休眠时短按 NEXT 唤醒；NEXT 不再用 PRESS 唤醒，避免按下就翻页 */
 static void power_on_next_click(button_id_t button, button_event_t event)
 {
   (void)button;
@@ -1588,14 +1601,14 @@ void power_init(void)
 
   crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
 
-  /* PB1 闇囧姩寮€鍏筹紝澶栭儴 10k 涓婃媺锛岄潤姝负楂?*/
+  /* PB1 震动开关，外部 10k 上拉，静止时为高 */
   gpio_default_para_init(&gpio_init_struct);
   gpio_init_struct.gpio_pins = GPIO_PINS_1;
   gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
   gpio_init_struct.gpio_pull = GPIO_PULL_UP;
   gpio_init(GPIOB, &gpio_init_struct);
 
-  /* CH224A I2C1锛歅B6=SCL锛孭B7=SDA锛孧UX_1锛屽閮?1k 涓婃媺 */
+  /* CH224A I2C1：PB6=SCL，PB7=SDA，MUX_1，板上 1k 上拉 */
   crm_periph_clock_enable(CRM_I2C1_PERIPH_CLOCK, TRUE);
 
   gpio_init_struct.gpio_pins = GPIO_PINS_6 | GPIO_PINS_7;
@@ -1687,7 +1700,8 @@ void power_update(uint32_t now_ms)
 
   power_voltage_task(now_ms);
 
-  /* CH224A 妗ｄ綅淇濇寔锛氳緭鍏ョ數鍘嬮暱鏈熷拰宸茶姹傛。浣嶄笉涓€鑷村氨閲嶆柊 commit + 璇锋眰銆?   * 闈為樆濉烇紝姝ｅ父鎯呭喌涓嬩竴 tick 鍙槸姣旇緝涓€娆＄數鍘嬨€?*/
+  /* CH224A 档位保持：输入电压长期和已请求档位不一致就重新 commit + 请求。
+  * 非阻塞，正常情况下一 tick 只是比较一次电压。*/
   /* 菜单里换了 PD 档位就先更新目标，真正的切换交给下面的 watchdog 非阻塞完成 */
   power_pd_slot_task(now_ms);
   power_pd_watchdog(now_ms);
@@ -1725,7 +1739,7 @@ void power_update(uint32_t now_ms)
   switch(power_state)
   {
     case POWER_STATE_ACTIVE:
-      /* 浼戠湢鍙湅鍔熺巼锛氣墹15% 鐨勫姛鐜囧崰缁濆澶氭暟鎵嶇疮绉紤鐪犳椂闂?*/
+      /* 休眠只看功率：≤15% 的功率占绝对多数才累积休眠时间 */
       sm_get_status(&status);
       if(status.power <= power_low_power_threshold)
       {
@@ -1765,7 +1779,7 @@ void power_update(uint32_t now_ms)
       if((motion_activity != 0U) &&
          ((int32_t)(power_vibration_wake_block_until_ms - now_ms) <= 0))
       {
-        /* 鎵嬪姩 disabled 鐘舵€佷笅闇囧姩鐩存帴鍞ら啋骞舵仮澶嶅姞鐑?*/
+        /* 手动 disabled 状态下震动直接唤醒并恢复加热 */
         power_wake_now(now_ms);
         (void)sm_set_heater_enabled(1U);
       }
