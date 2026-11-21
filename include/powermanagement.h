@@ -41,6 +41,11 @@ extern "C" {
 #define POWER_CH224A_REG_STATUS                 (0x09U)
 #define POWER_CH224A_REG_VOLTAGE                (0x0AU)
 #define POWER_CH224A_REG_CURRENT_LIMIT          (0x50U)   /* 单位 50 mA */
+/* 适配器 Source_Capabilities 原始数据：官方手册表 5-3 叫"PD 电源数据寄存器"，
+ * 只读，0x60/0x61 是 PD 消息头（16 位小端），0x62 起是 PDO（每个 32 位小端），
+ * 个数在消息头 B14:12。官方没写内部排布，这里按社区多份实现 + 抓包对照的结论。 */
+#define POWER_CH224A_REG_CAP_BASE               (0x60U)
+#define POWER_CH224A_CAP_COUNT                  (48U)     /* 0x60..0x8F */
 
 /* 0x09 状态位（实测：未插 PD = 0x00；插入 = 0x48；档位切换成功 = 0xC8） */
 #define POWER_CH224A_STATUS_PD                  (0x08U)   /* 已建立 PD 合同 */

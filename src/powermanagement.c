@@ -737,6 +737,132 @@ uint8_t power_ch224a_negotiate(float volts)
  * 非阻塞：每个 tick 最多做一件事，正常情况只是比较一次电压。
  * 5V 档不纠偏：CFG1=205k 单电阻模式没有 5V 配置，写 0 芯片会保持默认档，
  * 纠偏只会白白打断合同。 */
+#if POWER_CH224A_DEBUG
+/* 适配器 Source_Capabilities 解码，只在调试打印打开时编译，生产固件一个字节都不占。
+ *
+ * 0x60~0x8F 官方手册只写了两句话：只读、装的是适配器发来的 SRCCAP（EPR 模式下是
+ * EPR_SRCCAP）原始数据，内部怎么排布官方没写。社区三份独立实现（M5Stack-CH224x-PPS、
+ * 0wQ/ch224q、CH32V307 例程）加 PowerZ 抓包逐字节对照的结论一致：
+ *   0x60/0x61 = PD 消息头，16 位小端，B4:0 消息类型（1 = Source_Capabilities），
+ *               B14:12 = PDO 个数；
+ *   0x62 起   = PDO0..PDO6，每个 32 位小端；再往后是 CRC32，其余寄存器无定义。
+ * PDO 位域按 USB PD 规范：Fixed Supply 是 B31:30=00、B19:10=电压(50mV 单位)、
+ * B9:0=最大电流(10mA) —— 是 B19:10，不是 Battery PDO 的 B29:20，搞混了会把 5V
+ * 解成 8V。
+ *
+ * CH224A 不支持连续读，只能一个寄存器一个寄存器读；读的过程中 PD 引擎还可能刷新
+ * 这个缓冲，所以整块读两遍，两遍一致的字节才当可信，不一致的抹零并计数报出来。 */
+static void power_pd_dbg_hex32(uint32_t value)
+{
+  POWER_DBG_HEX((uint8_t)(value >> 24));
+  POWER_DBG_HEX((uint8_t)(value >> 16));
+  POWER_DBG_HEX((uint8_t)(value >> 8));
+  POWER_DBG_HEX((uint8_t)value);
+}
+
+
+static void power_pd_dump_caps(void)
+{
+  uint8_t data[POWER_CH224A_CAP_COUNT];
+  uint8_t again;
+  uint8_t bad;
+  uint8_t i;
+  uint16_t head;
+  uint8_t ndo;
+
+  bad = 0U;
+
+  for(i = 0U; i < POWER_CH224A_CAP_COUNT; i++)
+  {
+    if(power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &data[i]) == 0U)
+    {
+      POWER_DBG("\r\n[pd] cap fail@0x");
+      POWER_DBG_HEX((uint8_t)(POWER_CH224A_REG_CAP_BASE + i));
+      POWER_DBG("\r\n");
+
+      return;
+    }
+  }
+
+  for(i = 0U; i < POWER_CH224A_CAP_COUNT; i++)
+  {
+    again = 0U;
+
+    if((power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &again) == 0U)
+       || (again != data[i]))
+    {
+      data[i] = 0U;
+      bad++;
+    }
+  }
+
+  head = (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
+  ndo = (uint8_t)((head >> 12) & 0x07U);
+
+  POWER_DBG("\r\n[pd] cap hdr=");
+  POWER_DBG_HEX((uint8_t)(head >> 8));
+  POWER_DBG_HEX((uint8_t)head);
+  POWER_DBG(" type=");
+  POWER_DBG_DEC((uint32_t)(head & 0x1FU));
+  POWER_DBG(" rev=");
+  POWER_DBG_DEC((uint32_t)((head >> 6) & 0x03U));
+  POWER_DBG(" ndo=");
+  POWER_DBG_DEC(ndo);
+  POWER_DBG(" bad=");
+  POWER_DBG_DEC(bad);
+
+  if(((head & 0x1FU) != 0x01U) || (ndo == 0U) || (ndo > 7U))
+  {
+    POWER_DBG("\r\n");
+
+    return;
+  }
+
+  for(i = 0U; i < ndo; i++)
+  {
+    uint32_t pdo;
+
+    pdo = (uint32_t)data[2U + (i * 4U)]
+        | ((uint32_t)data[3U + (i * 4U)] << 8)
+        | ((uint32_t)data[4U + (i * 4U)] << 16)
+        | ((uint32_t)data[5U + (i * 4U)] << 24);
+
+    POWER_DBG("\r\n[pd] pdo");
+    POWER_DBG_DEC(i);
+    POWER_DBG("=");
+    power_pd_dbg_hex32(pdo);
+
+    if(((pdo >> 30) & 0x03U) == 0x00U)
+    {
+      POWER_DBG(" F ");
+      POWER_DBG_DEC(((pdo >> 10) & 0x3FFU) * 50U);
+      POWER_DBG("mV/");
+      POWER_DBG_DEC((pdo & 0x3FFU) * 10U);
+      POWER_DBG("mA");
+    }
+    else if(((pdo >> 30) & 0x03U) == 0x03U)
+    {
+      POWER_DBG(" PPS ");
+      POWER_DBG_DEC(((pdo >> 8) & 0xFFU) * 100U);
+      POWER_DBG("-");
+      POWER_DBG_DEC(((pdo >> 17) & 0xFFU) * 100U);
+      POWER_DBG("mV/");
+      POWER_DBG_DEC((pdo & 0x7FU) * 50U);
+      POWER_DBG("mA");
+    }
+    else
+    {
+      POWER_DBG(" BAT");
+    }
+  }
+
+  POWER_DBG("\r\n");
+}
+#else
+#define power_pd_dump_caps()            do {} while(0)
+#endif
+
+
 /* 菜单里给的 PD 档位索引。可选项是 0..4（5/9/12/15/20V），28V（索引 5）不给选，
  * 但老参数里可能残留 5，越界一律按 20V 处理，别让固件去要一个整机没设计的电压。 */
 static uint8_t power_pd_slot_sanitize(uint8_t slot)
@@ -937,6 +1063,7 @@ static void power_pd_watchdog(uint32_t now_ms)
           POWER_DBG(" mv=");
           POWER_DBG_DEC(power_voltage_mv);
           POWER_DBG("\r\n");
+          power_pd_dump_caps();
         }
       }
       break;
