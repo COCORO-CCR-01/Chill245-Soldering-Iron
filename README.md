@@ -1,6 +1,5 @@
 # Chill245 烙铁控制器 By ATRI 
-#Star 太少了，我要 Star!!!!!
-#进群 851506682 看Zylo117女装
+
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
