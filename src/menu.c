@@ -138,6 +138,15 @@ static const char *const menu_pid_mode_options[] =
   "STD", "BOOST", "CUSTOM"
 };
 
+/* PD 输入档位：直接对应 CH224A 寄存器 0x0A 的索引 0..4。
+ * 28V 档（索引 5）故意不给选，整机按 20V 设计，别在这儿把 28V 放出来。
+ * 选完不需要确认也不需要重启：power_pd_slot_task() 在主循环里看到目标档
+ * 变了，就交给 power_pd_watchdog() 非阻塞地 commit -> 重写 -> 校验。 */
+static const char *const menu_pd_slot_options[] =
+{
+  "5V", "9V", "12V", "15V", "20V"
+};
+
 
 static void menu_action_back(void);
 static void menu_action_sleep(void);
@@ -176,6 +185,7 @@ static const menu_item_t menu_temperature_items[] =
 
 static const menu_item_t menu_sleep_items[] =
 {
+  { "PD SLOT",      MENU_ITEM_ENUM,  &menu_config.ch224a_index,  NULL, menu_pd_slot_options, 5U, 1.0f, 0.0f, 4.0f, 0U, "",   NULL },
   { "SLEEP TIME",   MENU_ITEM_FLOAT, &menu_config.stationary_s,      NULL, NULL, 0, 5.0f,   5.0f,   3600.0f, 0U, "s",  NULL },
   { "SLEEP PWR",    MENU_ITEM_FLOAT, &menu_config.sleep_power_pct,   NULL, NULL, 0, 1.0f,   0.0f,   100.0f,  0U, "%",  NULL },
   { "SLEEP TEMP",   MENU_ITEM_FLOAT, &menu_config.reduced_temp_c,    NULL, NULL, 0, 5.0f,   50.0f,  400.0f,  0U, "C",  NULL },

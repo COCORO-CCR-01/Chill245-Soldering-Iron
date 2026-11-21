@@ -19,6 +19,7 @@
 #include "at32f421_conf.h"
 #include "buttons.h"
 #include "display.h"
+#include "eeprom.h"
 #include "statemachine.h"
 #include "wk_system.h"
 #include <stddef.h>
@@ -736,6 +737,46 @@ uint8_t power_ch224a_negotiate(float volts)
  * 非阻塞：每个 tick 最多做一件事，正常情况只是比较一次电压。
  * 5V 档不纠偏：CFG1=205k 单电阻模式没有 5V 配置，写 0 芯片会保持默认档，
  * 纠偏只会白白打断合同。 */
+/* 菜单里给的 PD 档位索引。可选项是 0..4（5/9/12/15/20V），28V（索引 5）不给选，
+ * 但老参数里可能残留 5，越界一律按 20V 处理，别让固件去要一个整机没设计的电压。 */
+static uint8_t power_pd_slot_sanitize(uint8_t slot)
+{
+  if(slot > (uint8_t)POWER_CH224A_INDEX_20V)
+  {
+    return (uint8_t)POWER_CH224A_INDEX_20V;
+  }
+
+  return slot;
+}
+
+
+/* 跟踪菜单里选的 PD 档位。这里只改目标档位，不在主循环里做阻塞协商：
+ * 把 watchdog 清回 MONITOR，它下个周期发现实测 VBUS 和新目标不一致，就自己走
+ * commit -> 重写目标档 -> 校验，换档过程显示和加热都不会卡住。
+ * 选 5V 时芯片在 CFG1=205k 单电阻模式下谈不到 5V，会保持默认档，watchdog
+ * 对 5V 也不纠偏，所以不会出现反复重试。 */
+static void power_pd_slot_task(uint32_t now_ms)
+{
+  uint8_t slot;
+
+  slot = power_pd_slot_sanitize(g_eeprom_params.ch224a_index);
+  if(slot == power_ch224a_target_index)
+  {
+    return;
+  }
+
+  power_ch224a_target_index = slot;
+  power_pd_action = POWER_PD_MONITOR;
+  power_pd_bad_since_ms = 0U;
+  power_pd_step_ms = now_ms;
+  power_pd_attempts = 0U;
+
+  POWER_DBG("\r\n[pd] slot->");
+  POWER_DBG_DEC(slot);
+  POWER_DBG("\r\n");
+}
+
+
 static void power_pd_watchdog(uint32_t now_ms)
 {
   uint8_t index;
@@ -1452,7 +1493,7 @@ void power_init(void)
   power_ch224a_address = POWER_CH224A_I2C_ADDR_PRIMARY;
   power_ch224a_voltage_v = POWER_CH224A_DEFAULT_VOLTAGE_V;
   power_ch224a_status = 0U;
-  power_ch224a_target_index = power_ch224a_index_of(POWER_CH224A_DEFAULT_VOLTAGE_V);
+  power_ch224a_target_index = power_pd_slot_sanitize(g_eeprom_params.ch224a_index);
   power_pd_action = POWER_PD_MONITOR;
   power_pd_bad_since_ms = 0U;
   power_pd_step_ms = 0U;
@@ -1520,6 +1561,8 @@ void power_update(uint32_t now_ms)
   power_voltage_task(now_ms);
 
   /* CH224A 妗ｄ綅淇濇寔锛氳緭鍏ョ數鍘嬮暱鏈熷拰宸茶姹傛。浣嶄笉涓€鑷村氨閲嶆柊 commit + 璇锋眰銆?   * 闈為樆濉烇紝姝ｅ父鎯呭喌涓嬩竴 tick 鍙槸姣旇緝涓€娆＄數鍘嬨€?*/
+  /* 菜单里换了 PD 档位就先更新目标，真正的切换交给下面的 watchdog 非阻塞完成 */
+  power_pd_slot_task(now_ms);
   power_pd_watchdog(now_ms);
 
   level = power_read_vibration_level();

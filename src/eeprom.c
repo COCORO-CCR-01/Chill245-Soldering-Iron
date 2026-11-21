@@ -434,6 +434,7 @@ void eeprom_init(void)
     g_eeprom_params.boost_timeout_s = 300.0f;
     g_eeprom_params.setpoint_step_c = 5.0f;
     g_eeprom_params.time_step_s = 5.0f;
+    g_eeprom_params.ch224a_index = 4U; /* PD 档位 4 = 20V */
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
     g_eeprom_params.display_left_hand = 0U;
