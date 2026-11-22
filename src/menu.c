@@ -42,7 +42,7 @@
  * 打开菜单时读到的值和地址打出来。两边地址不一样就说明菜单项指向的不是
  * g_eeprom_params.ch224a_index 本体；地址一样、值不一样，就是中途有人改回去。
  * 关掉（改成 0）这些代码整体不参与编译。 */
-#define MENU_DEBUG                      (1U)
+#define MENU_DEBUG                      (0U)
 
 #if MENU_DEBUG
 #include "at32f421_usart.h"
