@@ -457,6 +457,12 @@ static uint8_t cl_last_vibration;
 static uint8_t cl_last_right_pair;
 static int cl_last_right_a = -1;
 static int cl_last_right_b = -1;
+/* 上一拍读到、还没确认的候选值。VIN / 冷端是 10ms 刷新的瞬时 ADC 值，没有滤波，
+ * 加热时输入端约 2.5V 峰峰的纹波会把 0.1V / 0.1C 那一位来回推过边界，签名每拍都
+ * 变就等于整块 4Hz 重画，还是闪。改成"同一个显示值连续两拍读到"才认它是真变了，
+ * 来回抖动的值永远过不了这道闸。 */
+static int cl_pend_right_a = -1;
+static int cl_pend_right_b = -1;
 
 static void maindash_classic_top_draw(const sm_status_t *status)
 {
@@ -661,6 +667,9 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   uint8_t vibration;
   int right_a;
   int right_b;
+  /* 必须在函数开头就声明并清零：整页重绘那条路是 goto cache 收尾，声明放晚了
+     cache 段读到的是没初始化的值 */
+  uint8_t right_dirty = 0U;
 
   /* 先把这一帧"要显示成什么样"全部算出来，再决定哪一块需要画。这段必须放在整页
    * 重绘分支之前：那个分支用 goto cache 收尾，算晚了存进缓存的就是没初始化的值
@@ -681,6 +690,11 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     maindash_force_full = 0U;
     maindash_classic_draw(status, now_ms);
+    /* 整页重绘已经把当前值画上去了，缓存照实记，别等下一帧的脏判断去猜 */
+    cl_last_right_a = right_a;
+    cl_last_right_b = right_b;
+    cl_pend_right_a = right_a;
+    cl_pend_right_b = right_b;
     goto cache;
   }
 
@@ -714,11 +728,31 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
    * 就是用户反馈"右边必然闪"的直接原因。签名和画上去的内容严格一致（VIN 精确到
    * 0.1V、冷端 0.1C、设定温度 1C、MODE 档位），这些真变了照样立刻刷新，
    * 没变就一个像素都不动。 */
-  if((pair != cl_last_right_pair) ||
-     (right_a != cl_last_right_a) ||
-     (right_b != cl_last_right_b))
+  if(pair != cl_last_right_pair)
+  {
+    /* 2 秒轮播换页，两屏内容完全不同，整块重画是必须的 */
+    right_dirty = 1U;
+  }
+  else if((right_a != cl_last_right_a) || (right_b != cl_last_right_b))
+  {
+    if((right_a == cl_pend_right_a) && (right_b == cl_pend_right_b))
+    {
+      /* 上一拍也是这个值，认定是真的变了 */
+      right_dirty = 1U;
+    }
+    else
+    {
+      /* 先记下候选值，下一拍再确认，专门挡 VIN / 冷端最低位的来回抖动 */
+      cl_pend_right_a = right_a;
+      cl_pend_right_b = right_b;
+    }
+  }
+
+  if(right_dirty != 0U)
   {
     mask |= CL_DIRTY_RIGHT;
+    cl_pend_right_a = right_a;
+    cl_pend_right_b = right_b;
   }
 
   if(mask != 0U)
@@ -732,8 +766,14 @@ cache:
   cl_last_set = show_set;
   cl_last_valid = status->temp_valid;
   cl_last_right_pair = pair;
-  cl_last_right_a = right_a;
-  cl_last_right_b = right_b;
+  /* cl_last_right_a/b 记的是"屏上此刻画的是什么"，只有真的重画过才更新：无条件更新
+   * 会让防抖把自己骗过去（记了新值，屏上还是旧的，之后就再也不画了）。
+   * 整页重绘那条 goto 已经在重画后单独赋过值。 */
+  if(right_dirty != 0U)
+  {
+    cl_last_right_a = right_a;
+    cl_last_right_b = right_b;
+  }
   cl_last_top = top_state;
   cl_last_status = status_text;
   cl_last_seconds = (int)seconds;
