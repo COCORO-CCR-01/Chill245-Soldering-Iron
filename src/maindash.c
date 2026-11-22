@@ -442,6 +442,10 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
 #define CL_DIRTY_RIGHT     (1U << 2)
 #define CL_DIRTY_BOTTOM    (1U << 3)
 #define CL_DIRTY_PROGRESS  (1U << 4)
+/* 下面三个是"局部刷新"的细粒度位：只补真正变了的那一小块，不再重铺整条背景 */
+#define CL_DIRTY_BOTTOM_SECONDS (1U << 5)   /* 只有 SLEEP 倒计时秒数变了 */
+#define CL_DIRTY_BOTTOM_VIB     (1U << 6)   /* 只有震动指示点变了 */
+#define CL_DIRTY_RIGHT_VALUE    (1U << 7)   /* 右侧块只有数值变、页码没变 */
 
 static int cl_last_tip = -1;
 static int cl_last_power = -1;
@@ -583,15 +587,67 @@ static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_
   }
 }
 
+/* 只把"要重写的那一小块"背景铺好：有壁纸回填壁纸，没壁纸刷黑。
+ * 用来取代整条 / 整块的 wallpaper_blit —— 那是闪烁的主因：一次重铺 4160 字节
+ * （底栏 160x13）或 8232 字节（右块 84x49），期间屏幕上是"先空一下再画回来"。 */
+static void maindash_patch_bg(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+{
+  if(w == 0U)
+  {
+    return;
+  }
+
+  if((uint16_t)(x + w) > DISPLAY_WIDTH)
+  {
+    w = (uint16_t)(DISPLAY_WIDTH - x);
+  }
+
+  if(w == 0U)
+  {
+    return;
+  }
+
+  if(wallpaper_is_available() != 0U)
+  {
+    wallpaper_blit(x, y, w, h);
+  }
+  else
+  {
+    display_fill_rect(x, y, w, h, UI_BLACK);
+  }
+}
+
+/* SLEEP 倒计时：每秒都要更新，原来每次都是整条底栏重铺 + 图标和三段文字全部重画，
+ * 所以"下面 sleep 右边的时间"每秒闪一下。改成只擦只画秒数自己那一块，擦除宽度取
+ * 新旧两个宽度里大的那个，位数变短（120s -> 99s）才不会留尾巴。 */
+static uint8_t cl_last_seconds_w;
+
+static void maindash_classic_bottom_seconds_draw(uint32_t seconds)
+{
+  char value[12];
+  uint16_t w;
+  uint16_t erase_w;
+
+  fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
+  w = (uint16_t)display_string_width(value, 1U);
+  erase_w = (w > (uint16_t)cl_last_seconds_w) ? w : (uint16_t)cl_last_seconds_w;
+
+  maindash_patch_bg(114U, 66U, erase_w, 5U);
+  display_draw_string_transparent(114U, 66U, value, UI_PINK, 1U);
+  cl_last_seconds_w = (uint8_t)w;
+}
+
+/* 震动指示点：4x4，直接整块覆盖就行，不用擦背景 */
+static void maindash_classic_bottom_vib_draw(uint8_t vibration)
+{
+  display_fill_rect(107U, 68U, 4U, 4U, (vibration != 0U) ? UI_PINK : UI_DARK);
+}
+
 static void maindash_classic_bottom_draw(const sm_status_t *status)
 {
   const char *status_text;
   uint16_t status_color;
   ui_icon_t status_icon = UI_ICON_POWER;
-  char value[20];
-  uint32_t remaining_ms;
-  uint32_t seconds;
-  uint8_t vibration;
 
   wallpaper_blit(0U, 64U, DISPLAY_WIDTH, 13U);
   status_text = maindash_status_text(status, &status_color);
@@ -604,14 +660,11 @@ static void maindash_classic_bottom_draw(const sm_status_t *status)
   ui_icon_draw(status_icon, 2U, 65U, status_color);
   display_draw_string_transparent(12U, 66U, status_text, status_color, 2U);
 
-  remaining_ms = power_get_sleep_remaining_ms();
-  seconds = (remaining_ms + 999U) / 1000U;
-  vibration = power_get_vibration_state();
+  /* SLEEP 标签只在整条重画时画一次；秒数和震动点各自有局部刷新的小函数 */
   display_draw_string_transparent(84U, 66U, "SLEEP", UI_BLUE, 1U);
-  display_fill_rect(107U, 68U, 4U, 4U,
-                    (vibration != 0U) ? UI_PINK : UI_DARK);
-  fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
-  display_draw_string_transparent(114U, 66U, value, UI_PINK, 1U);
+  maindash_classic_bottom_vib_draw(power_get_vibration_state());
+  maindash_classic_bottom_seconds_draw(
+    (power_get_sleep_remaining_ms() + 999U) / 1000U);
 }
 
 static void maindash_classic_progress_draw(const sm_status_t *status)
@@ -646,6 +699,19 @@ static void maindash_classic_partial(const sm_status_t *status, uint32_t now_ms,
   if((mask & CL_DIRTY_BOTTOM) != 0U)
   {
     maindash_classic_bottom_draw(status);
+  }
+  else
+  {
+    /* 底栏按字段局部刷新：状态文字没变时，秒数和震动点各补自己那一小块 */
+    if((mask & CL_DIRTY_BOTTOM_SECONDS) != 0U)
+    {
+      maindash_classic_bottom_seconds_draw(
+        (power_get_sleep_remaining_ms() + 999U) / 1000U);
+    }
+    if((mask & CL_DIRTY_BOTTOM_VIB) != 0U)
+    {
+      maindash_classic_bottom_vib_draw(power_get_vibration_state());
+    }
   }
   if((mask & CL_DIRTY_PROGRESS) != 0U)
   {
@@ -716,11 +782,25 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= CL_DIRTY_TOP;
   }
-  if((status_text != cl_last_status) ||
-     ((int)seconds != cl_last_seconds) ||
-     (vibration != cl_last_vibration))
+  /* 底栏分字段判脏：状态文字（连同图标、颜色）变了才重铺整条；只有倒计时或只有
+   * 震动点变了，就各补自己那一小块。SLEEP 倒计时每秒都变，以前每秒重铺整条底栏
+   * 160x13（4160 字节）+ 图标和全部文字重画，就是用户说的"下面 sleep 右边的时间"
+   * 每秒必闪。 */
+  if(status_text != cl_last_status)
   {
     mask |= CL_DIRTY_BOTTOM;
+  }
+  else
+  {
+    if((int)seconds != cl_last_seconds)
+    {
+      mask |= CL_DIRTY_BOTTOM_SECONDS;
+    }
+
+    if(vibration != cl_last_vibration)
+    {
+      mask |= CL_DIRTY_BOTTOM_VIB;
+    }
   }
   /* 右侧轮播块改成"值变了才画"：页码变了，或者这一屏真正要显示的两个值变了，才标脏。
    * 原来这里没有任何值判断，(now_ms - cl_last_right_ms) >= 500 就重画整块 —— 
