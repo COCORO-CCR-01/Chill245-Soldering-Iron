@@ -226,6 +226,74 @@ static void hms_draw_fault_notice(void)
   hms_draw_center("HOLD MENU SETUP", 70U, HMS_GRAY, 1U);
 }
 
+/* 当前该显示哪一句故障文字：电源欠压 / 过压优先，其余按 verifyheater 的故障码。
+ * 返回的都是静态字符串，可以直接比指针。 */
+static const char *hms_fault_text_now(void)
+{
+  sm_status_t status;
+  power_fault_t power_fault = power_get_fault();
+
+  if(power_fault == POWER_FAULT_UNDERVOLTAGE)
+  {
+    return "INPUT UNDERVOLTAGE";
+  }
+
+  if(power_fault == POWER_FAULT_OVERVOLTAGE)
+  {
+    return "INPUT OVERVOLTAGE";
+  }
+
+  sm_get_status(&status);
+
+  return hms_fault_text(status.fault);
+}
+
+/* 屏上此刻画的是哪句故障文字，用来判断故障类型有没有变（变了才需要整屏重画） */
+static const char *hms_shown_fault_text;
+
+/* 只刷黄色横幅里那四个会变的数值：VIN / COLD / NOW / SET。每个字段先把自己的槽位
+ * 铺回黄色再画新值，槽位边界按同一行相邻字段的位置划好，不会互相吃字。
+ *
+ * 故障界面每秒要刷新一次数值，原来每次都走 hms_draw_fault_notice()：display_clear
+ * 整屏 160x80（25600 字节）+ 30 像素高的横幅 + 故障文字 + 两行操作提示全部重画，
+ * 一秒一次"整屏黑掉再画回来"，就是用户说的 HMS 全屏闪烁。拆开后每秒只动这
+ * 四个槽位，其余一个像素不碰。 */
+static void hms_draw_fault_values(void)
+{
+  sm_status_t status;
+  uint16_t vin_mv;
+  char line[16];
+
+  sm_get_status(&status);
+  vin_mv = power_get_voltage_mv();
+
+  fmt_snprintf(line, sizeof(line), "VIN %uV",
+               (unsigned)((vin_mv + 500U) / 1000U));
+  display_fill_rect(30U, 2U, 58U, 10U, HMS_YELLOW);
+  display_draw_string(30U, 2U, line, HMS_BLACK, HMS_YELLOW, 2U);
+
+  fmt_snprintf(line, sizeof(line), "COLD %dC", (int)(status.room_c + 0.5f));
+  display_fill_rect(90U, 2U, 70U, 10U, HMS_YELLOW);
+  display_draw_string(90U, 2U, line, HMS_BLACK, HMS_YELLOW, 2U);
+
+  /* 温度不可信（没插烙铁 / 热偶开路）时画 "NOW ---"，不印假数字，和主界面一致 */
+  if(status.temp_valid != 0U)
+  {
+    fmt_snprintf(line, sizeof(line), "NOW %dC", (int)(status.tip_c + 0.5f));
+  }
+  else
+  {
+    fmt_snprintf(line, sizeof(line), "NOW ---");
+  }
+
+  display_fill_rect(2U, 16U, 86U, 10U, HMS_YELLOW);
+  display_draw_string(2U, 16U, line, HMS_BLACK, HMS_YELLOW, 2U);
+
+  fmt_snprintf(line, sizeof(line), "SET %dC", (int)(status.setpoint_c + 0.5f));
+  display_fill_rect(90U, 16U, 70U, 10U, HMS_YELLOW);
+  display_draw_string(90U, 16U, line, HMS_BLACK, HMS_YELLOW, 2U);
+}
+
 static void hms_draw_eeprom_recovered(void)
 {
   display_clear(HMS_BLACK);
@@ -321,6 +389,12 @@ void hms_show_eeprom_recovered(void)
   hms_drawn = 0U;
 }
 
+/* 重试之后在故障界面多赖一会儿的时间。sm_clear_fault() 的那一瞬间故障显示是清掉的，
+ * 立刻让出屏幕就会露出主界面，紧接着故障重新成立、HMS 又整屏画回来。 */
+#define HMS_RETRY_HOLD_MS   1500U
+
+static uint32_t hms_retry_hold_until_ms;
+
 uint8_t hms_task(uint32_t now_ms)
 {
   sm_status_t status;
@@ -358,12 +432,29 @@ uint8_t hms_task(uint32_t now_ms)
                        (buttons_is_pressed(BUTTON_NEXT) != 0U)) ? 1U : 0U;
     }
 
-    if((hms_drawn == 0U) ||
-       ((uint32_t)(now_ms - hms_info_ms) >= 1000U))
+    if(hms_drawn == 0U)
     {
+      /* 第一次进这个界面：整屏画一遍（黄色横幅 + ERR + 故障文字 + 两行提示 + 数值） */
       hms_draw_fault_notice();
       hms_drawn = 1U;
+      hms_shown_fault_text = hms_fault_text_now();
       hms_info_ms = (now_ms == 0U) ? 1U : now_ms;
+    }
+    else if((uint32_t)(now_ms - hms_info_ms) >= 1000U)
+    {
+      hms_info_ms = (now_ms == 0U) ? 1U : now_ms;
+
+      if(hms_fault_text_now() != hms_shown_fault_text)
+      {
+        /* 故障类型变了，中间那句故障文字得换，整屏重画一次 */
+        hms_draw_fault_notice();
+        hms_shown_fault_text = hms_fault_text_now();
+      }
+      else
+      {
+        /* 每秒的例行刷新只更新横幅里那四个数值，不再整屏刷黑再全部重画 */
+        hms_draw_fault_values();
+      }
     }
 
     menu_pressed = buttons_is_pressed(BUTTON_MENU);
@@ -395,15 +486,36 @@ uint8_t hms_task(uint32_t now_ms)
       (void)sm_clear_fault();
       (void)power_clear_fault();
       (void)sm_set_heater_enabled(1U);
-      hms_view = HMS_VIEW_NONE;
-      hms_drawn = 0U;
+
+      /* 重试不把屏幕交还出去。原来是 hms_view = NONE + return 0，主循环下一拍就走
+       * else 分支把主界面画了出来；而故障（烙铁还拔着）几百毫秒内重新成立，HMS 再
+       * 整屏画回来 —— 用户看到的就是"按一下闪一下主界面再闪回来"。
+       * 现在留在故障界面，并给自己 HMS_RETRY_HOLD_MS 的观察期：观察期内故障回来了
+       * 就什么变化都没有（一个像素不重画），真的清掉了才让出屏幕，只回主界面一次，
+       * 不会再闪回来。 */
+      hms_retry_hold_until_ms = now_ms + HMS_RETRY_HOLD_MS;
       hms_pair_last = 0U;
-      return 0U;
+      return 1U;
     }
 
     hms_pair_last = pair_pressed;
 
     hms_menu_last = menu_pressed;
+    return 1U;
+  }
+
+  /* 重试后的观察期：故障此刻显示是清掉的，但这时候让出屏幕就会把主界面画出来，
+   * 紧接着故障又成立、HMS 又整屏画回来，看着就是来回闪。观察期内赖在故障界面
+   * （数值照常每秒刷一次，不画成死屏），到点再按真实状态决定去留。 */
+  if((hms_view == HMS_VIEW_FAULT) &&
+     ((int32_t)(now_ms - hms_retry_hold_until_ms) < 0))
+  {
+    if((uint32_t)(now_ms - hms_info_ms) >= 1000U)
+    {
+      hms_info_ms = (now_ms == 0U) ? 1U : now_ms;
+      hms_draw_fault_values();
+    }
+
     return 1U;
   }
 

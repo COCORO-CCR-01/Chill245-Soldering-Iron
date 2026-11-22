@@ -38,93 +38,6 @@
 
 #define menu_config                     g_eeprom_params
 
-/* 查 PD VOLT 不记忆用的串口打点：把"点 MENU 循环选项"写进去的值和地址、以及每次
- * 打开菜单时读到的值和地址打出来。两边地址不一样就说明菜单项指向的不是
- * g_eeprom_params.ch224a_index 本体；地址一样、值不一样，就是中途有人改回去。
- * 关掉（改成 0）这些代码整体不参与编译。 */
-#define MENU_DEBUG                      (0U)
-
-#if MENU_DEBUG
-#include "at32f421_usart.h"
-
-static void menu_dbg_char(char c)
-{
-  while(usart_flag_get(USART1, USART_TDBE_FLAG) == RESET)
-  {
-  }
-
-  usart_data_transmit(USART1, (uint16_t)c);
-}
-
-static void menu_dbg_str(const char *s)
-{
-  while(*s != '\0')
-  {
-    menu_dbg_char(*s);
-    s++;
-  }
-}
-
-static void menu_dbg_dec(uint32_t v)
-{
-  char buf[10];
-  uint8_t i = 0U;
-
-  if(v == 0U)
-  {
-    menu_dbg_char('0');
-    return;
-  }
-
-  while(v != 0U)
-  {
-    buf[i] = (char)('0' + (v % 10U));
-    v /= 10U;
-    i++;
-  }
-
-  while(i > 0U)
-  {
-    i--;
-    menu_dbg_char(buf[i]);
-  }
-}
-
-static void menu_dbg_hex(uint32_t v)
-{
-  uint8_t i;
-  uint8_t started = 0U;
-
-  for(i = 0U; i < 8U; i++)
-  {
-    uint8_t nibble = (uint8_t)((v >> ((7U - i) * 4U)) & 0xFU);
-
-    if((nibble != 0U) || (started != 0U))
-    {
-      started = 1U;
-      menu_dbg_char((char)((nibble < 10U) ? ('0' + nibble) : ('a' + nibble - 10U)));
-    }
-  }
-
-  if(started == 0U)
-  {
-    menu_dbg_char('0');
-  }
-}
-
-/* 打印"当前 PD VOLT 这一项"的值和它指向的地址，who 是打点位置的名字 */
-static void menu_dbg_pdvolt(const char *who)
-{
-  menu_dbg_str("\r\n[mn] ");
-  menu_dbg_str(who);
-  menu_dbg_str(" val=");
-  menu_dbg_dec(*(uint8_t *)&g_eeprom_params.ch224a_index);
-  menu_dbg_str(" field=0x");
-  menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
-  menu_dbg_str("\r\n");
-}
-#endif
-
 /* PD VOLT 的"合法值"影子。
  *
  * 实测串口记录：点 MENU 写入的地址就是 g_eeprom_params.ch224a_index 本体（打出来的
@@ -223,6 +136,16 @@ static uint8_t menu_nav_depth;
 static uint8_t menu_open_flag;
 static uint8_t menu_service_mode;
 static uint8_t menu_need_draw;
+/* 只是把选中条上下挪一格时走局部刷新：可见窗口没动，就只重画旧选中行和新选中行
+ * 这两行，计数变了再连页眉一起重画。原来每次点击都是 display_clear 整屏 160x80
+ * 刷黑（25600 字节，9MHz 下约 23ms）再把页眉、五行、页脚全部重画，这就是
+ * "点上下键整屏文字一起闪"的原因。 */
+static uint8_t menu_partial_row;
+static uint8_t menu_partial_prev;
+/* EDIT 视图（FLOAT 项）按加减号时：只重画中间数值框 */
+static uint8_t menu_edit_partial;
+static uint8_t menu_shown_selected;
+static uint8_t menu_shown_count;
 static uint8_t menu_long_handled;
 static uint8_t menu_quick_edit;
 static uint32_t menu_defaults_arm_until;
@@ -529,10 +452,6 @@ void menu_open(void)
   (void)sm_set_heater_enabled(0U);
 
   eeprom_capture_current();
-#if MENU_DEBUG
-  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
-  menu_dbg_pdvolt("open");
-#endif
   /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
   if(menu_pdvolt_shadow_valid == 0U)
   {
@@ -541,13 +460,6 @@ void menu_open(void)
   }
   else if(menu_config.ch224a_index != menu_pdvolt_shadow)
   {
-#if MENU_DEBUG
-    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
-    menu_dbg_dec(menu_config.ch224a_index);
-    menu_dbg_str(" -> restore ");
-    menu_dbg_dec(menu_pdvolt_shadow);
-    menu_dbg_str("\r\n");
-#endif
     menu_config.ch224a_index = menu_pdvolt_shadow;
   }
 
@@ -574,10 +486,6 @@ void menu_open_service_setup(void)
   power_wake();
   (void)sm_set_heater_enabled(0U);
   eeprom_capture_current();
-#if MENU_DEBUG
-  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
-  menu_dbg_pdvolt("open");
-#endif
   /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
   if(menu_pdvolt_shadow_valid == 0U)
   {
@@ -586,13 +494,6 @@ void menu_open_service_setup(void)
   }
   else if(menu_config.ch224a_index != menu_pdvolt_shadow)
   {
-#if MENU_DEBUG
-    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
-    menu_dbg_dec(menu_config.ch224a_index);
-    menu_dbg_str(" -> restore ");
-    menu_dbg_dec(menu_pdvolt_shadow);
-    menu_dbg_str("\r\n");
-#endif
     menu_config.ch224a_index = menu_pdvolt_shadow;
   }
 
@@ -737,10 +638,14 @@ void menu_open_quick_setpoint(void)
 
 static void menu_adjust_edit(int8_t direction)
 {
+  float prev_value;
+
   if(menu_edit_item == NULL)
   {
     return;
   }
+
+  prev_value = menu_edit_value;
 
   menu_edit_value += (menu_item_step(menu_edit_item) * (float)direction);
 
@@ -759,6 +664,15 @@ static void menu_adjust_edit(int8_t direction)
     maindash_notify_setpoint_adjusted();
   }
 
+  /* 已经顶到 min/max 还朝同一个方向按，数值一个字都没变，那就什么都不用画 ——
+   * 原来这里照样置 menu_need_draw，画面上就是一次整屏刷黑的空闪。 */
+  if(menu_edit_value == prev_value)
+  {
+    return;
+  }
+
+  /* 数值变了：只重画中间那个数值框，其余部分不动 */
+  menu_edit_partial = 1U;
   menu_need_draw = 1U;
 }
 
@@ -1003,6 +917,41 @@ static void menu_enter_item(void)
       {
         value = *(uint8_t *)item->value;
         *(uint8_t *)item->value = (value != 0U) ? 0U : 1U;
+
+        /* LIGHT MODE 切换必须立刻同步两套主题机制，否则会有"关掉 light mode 黑底还是
+         * 出现一块块白"的怪现象：
+         *
+         * display.c 里还有一套按字面色号硬映射的 display_theme_color()，里面
+         * case 0x0000: return 0xFFFF（黑底 -> 白），由 display_set_light_theme()
+         * 这个开关控制；appcolors 是另一套调色板主题。display_set_light_theme()
+         * 全项目只在 eeprom.c 加载参数时调过一次，菜单里 LIGHT MODE 是直接写
+         * menu_config.ui_light 的 BOOL 项，切完没人同步 —— 于是调色板已经是暗的，
+         * 面板级映射还停在 light，凡是用字面 0x0000 画的地方全被刷成白色。只有那
+         * 些地方会变，所以看到的是"部分白色"而不是整屏反色。
+         *
+         * 这里做的和 eeprom.c 加载参数时那几行完全一致（同一个顺序、同样的调用），
+         * 效果等于"按现在的 ui_light 重启一次"，不引入新语义。 */
+        if((const void *)item->value == (const void *)&menu_config.ui_light)
+        {
+          uint8_t light = *(uint8_t *)item->value;
+
+          display_set_light_theme(light);
+
+          /* 撤掉浅色叠加，回到基准（暗色）调色板。这里绝对不能调
+           * appcolors_set(menu_config.app_colors)：那份数据可能已经被上一次存盘时
+           * 导出的"浅色叠加后"的调色板污染了，切回暗色反而把近黑的文字色装了回来
+           * —— 用户实测的"白色切回黑色必坏"就是这么来的。基准板由 appcolors 模块
+           * 自己维护，浅色叠加从不改它。 */
+          appcolors_restore_base();
+
+          if(light != 0U)
+          {
+            appcolors_apply_light_defaults();
+          }
+
+          autoroll_request_redraw();
+        }
+
         menu_need_draw = 1U;
       }
       break;
@@ -1023,18 +972,10 @@ static void menu_enter_item(void)
           menu_pdvolt_shadow = value;
           menu_pdvolt_shadow_valid = 1U;
         }
-#if MENU_DEBUG
-        /* 写入的值 + 这一项真正指向的地址 */
-        menu_dbg_str("\r\n[mn] enum ");
-        menu_dbg_str(item->label);
-        menu_dbg_str(" -> ");
-        menu_dbg_dec(value);
-        menu_dbg_str(" @0x");
-        menu_dbg_hex((uint32_t)item->value);
-        menu_dbg_str(" field=0x");
-        menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
-        menu_dbg_str("\r\n");
-#endif
+        /* 只是这一项的数值换了一格：只重画这一行（prev 就是当前行，列表里别的行
+         * 全部跳过），不用整屏刷黑重画；页眉计数没变也不会跟着重画。 */
+        menu_partial_row = 1U;
+        menu_partial_prev = menu_nav.selected;
         menu_need_draw = 1U;
       }
       break;
@@ -1077,23 +1018,45 @@ static void menu_move(int8_t direction)
     return;
   }
 
-  if(direction < 0)
+  /* 记下移动前的选中行和滚动位置：可见窗口没变的话，就只重画旧选中行和新选中行
+   * 这两行，不用整屏清黑重画。 */
   {
-    if(menu_nav.selected > 0U)
-    {
-      menu_nav.selected--;
-    }
-  }
-  else
-  {
-    if(menu_nav.selected < (uint8_t)(count - 1U))
-    {
-      menu_nav.selected++;
-    }
-  }
+    uint8_t prev_selected = menu_nav.selected;
+    uint8_t prev_first = menu_nav.first;
 
-  menu_adjust_first();
-  menu_need_draw = 1U;
+    if(direction < 0)
+    {
+      if(menu_nav.selected > 0U)
+      {
+        menu_nav.selected--;
+      }
+    }
+    else
+    {
+      if(menu_nav.selected < (uint8_t)(count - 1U))
+      {
+        menu_nav.selected++;
+      }
+    }
+
+    menu_adjust_first();
+
+    if((prev_selected == menu_nav.selected) && (prev_first == menu_nav.first))
+    {
+      /* 已经到列表头/尾还朝同一个方向按：选中行没动、可见窗口也没动，屏幕上要显示
+       * 的东西一个都没变，那就什么都不画。原来这里照样置 menu_need_draw，于是整屏
+       * 刷黑重画一遍 —— 这就是"到最上/最下一条再按上或下必然闪"的原因。 */
+      menu_partial_row = 0U;
+    }
+    else
+    {
+      /* 可见窗口没变（中间那些行挪一格）：只重画旧选中行和新选中行两行；
+       * 窗口变了（滚动过）就照旧整屏重画。 */
+      menu_partial_row = (menu_nav.first == prev_first) ? 1U : 0U;
+      menu_partial_prev = prev_selected;
+      menu_need_draw = 1U;
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1275,6 +1238,13 @@ static float menu_item_step(const menu_item_t *item)
     return onekeyboost_get_setpoint_step();
   }
 
+  /* BOOT LOGO 只有 0..10 秒，跟着 TIME STEP（默认 5）走就只有 0/5/10 三档，太粗。
+   * 这一项固定按 1 秒步进。 */
+  if(item->value == &menu_config.bootlogo_delay_s)
+  {
+    return 1.0f;
+  }
+
   /* 秒级时间项使用 TIME STEP */
   if((item->unit != NULL) && (strcmp(item->unit, "s") == 0))
   {
@@ -1454,6 +1424,14 @@ static void menu_draw_list(void)
       break;
     }
 
+    /* 只是上下挪一格选中条时（menu_partial_row）：这一行既不是新的选中行也不是刚
+     * 被取消选中的那一行，就一个像素都不碰，避免整屏文字重画一遍引起闪烁。 */
+    if((menu_partial_row != 0U) &&
+       (index != menu_nav.selected) && (index != menu_partial_prev))
+    {
+      continue;
+    }
+
     item = &menu_nav.page->items[index];
     y = (uint8_t)(MENU_ROW_Y + (row * MENU_ROW_H));
     color = (index == menu_nav.selected) ? UI_VALUE : UI_CYAN;
@@ -1467,6 +1445,12 @@ static void menu_draw_list(void)
       display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
       display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
+    }
+    else
+    {
+      /* 整行铺黑：局部刷新时，这一行可能原来是选中行，得把橙色引导条和 ACCENT
+       * 底色一起擦掉，不然选中条会留在原地不动。 */
+      display_fill_rect(0U, y, DISPLAY_WIDTH, MENU_ROW_H - 1U, UI_BLACK);
     }
 
     ui_icon_draw(menu_item_icon(item), 4U, (uint16_t)(y + 1U),
@@ -1520,6 +1504,14 @@ static void menu_draw_curve(void)
       break;
     }
 
+    /* 只是上下挪一格选中条时（menu_partial_row）：跟列表页一样，这一行既不是新的
+     * 选中行也不是刚被取消选中的那一行，就一个像素都不碰。 */
+    if((menu_partial_row != 0U) &&
+       (index != menu_nav.selected) && (index != menu_partial_prev))
+    {
+      continue;
+    }
+
     y = (uint8_t)(MENU_ROW_Y + (row * MENU_ROW_H));
     background = (index == menu_nav.selected) ? UI_ACCENT : UI_BLACK;
 
@@ -1528,6 +1520,11 @@ static void menu_draw_curve(void)
       display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
       display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
+    }
+    else
+    {
+      /* 整行铺黑：局部刷新时把这一行原来的橙色引导条和 ACCENT 底色一起擦掉 */
+      display_fill_rect(0U, y, DISPLAY_WIDTH, MENU_ROW_H - 1U, UI_BLACK);
     }
 
     ui_icon_draw(UI_ICON_CURVE, 4U, (uint16_t)(y + 1U),
@@ -1559,13 +1556,11 @@ static void menu_draw_curve(void)
   }
 }
 
-static void menu_draw_edit(void)
+/* EDIT 视图中间那个数值框：面板底色 + 边框 + 数值本身。按加减号调数值时只重画
+ * 这一块，页眉、MIN/MAX/STEP 说明和页脚都只跟当前项有关，一个字都不变。 */
+static void menu_draw_edit_value(void)
 {
   char value[32];
-  char range[64];
-  char min_text[12];
-  char max_text[12];
-  char step_text[12];
   uint16_t width;
   uint16_t x;
   uint16_t scale = 3U;
@@ -1592,6 +1587,21 @@ static void menu_draw_edit(void)
 
   x = (uint16_t)((DISPLAY_WIDTH - width) / 2U);
   display_draw_string(x, 23U, value, UI_VALUE, UI_PANEL, scale);
+}
+
+static void menu_draw_edit(void)
+{
+  char range[64];
+  char min_text[12];
+  char max_text[12];
+  char step_text[12];
+
+  if(menu_edit_item == NULL)
+  {
+    return;
+  }
+
+  menu_draw_edit_value();
 
   menu_format_float(min_text, sizeof(min_text), menu_edit_item->min_value, 2U, "");
   menu_format_float(max_text, sizeof(max_text), menu_edit_item->max_value, 2U, "");
@@ -1677,11 +1687,71 @@ static void menu_draw(void)
 
   if(menu_nav.view == (uint8_t)MENU_VIEW_ABOUT)
   {
+    menu_partial_row = 0U;
+    menu_edit_partial = 0U;
     menu_draw_about();
     menu_need_draw = 0U;
     return;
   }
 
+  /* EDIT 视图（FLOAT 项，比如 MAX POWER / LOW VOLT）按加减号调数值：只重画中间
+   * 那个数值框。页眉、MIN/MAX/STEP 说明和页脚都只跟"当前是哪一项"有关，按一下
+   * 加减号它们一个字都不变，跟着整屏刷黑重画就是白闪一次。 */
+  if((menu_edit_partial != 0U) &&
+     (menu_nav.view == (uint8_t)MENU_VIEW_EDIT))
+  {
+    menu_edit_partial = 0U;
+    menu_draw_edit_value();
+    menu_need_draw = 0U;
+    return;
+  }
+
+  /* 只是上下挪一格选中条：不整屏 display_clear。整屏 160x80 刷黑是 25600 字节，
+   * 9MHz 下约 23ms，再把页眉、五行、页脚全部重画 —— 那就是点一下方向键整屏文字
+   * 闪一下的原因。这里只重画页眉计数（计数没变连页眉都不碰）和受影响的两个列表行。
+   * EDIT / CURVE 两个视图布局不一样，不走这条路径。 */
+  if((menu_partial_row != 0U) &&
+     (menu_nav.view != (uint8_t)MENU_VIEW_EDIT))
+  {
+    uint8_t count = (menu_nav.page != NULL) ? menu_nav.page->count : 0U;
+
+    if((menu_nav.page != &menu_dynamic_page) &&
+       ((menu_nav.selected != menu_shown_selected) ||
+        (count != menu_shown_count)))
+    {
+      if(menu_nav.view == (uint8_t)MENU_VIEW_CURVE)
+      {
+        title = (menu_nav.curve_kind == (uint8_t)MENU_CURVE_CUSTOM) ?
+                "CUSTOM PID" : "TEMP CAL";
+      }
+      else
+      {
+        title = (menu_nav.page != NULL) ? menu_nav.page->title : "SETTINGS";
+      }
+
+      menu_draw_header_counter(counter, sizeof(counter));
+      menu_draw_header(title, counter);
+    }
+
+    menu_shown_selected = menu_nav.selected;
+    menu_shown_count = count;
+
+    if(menu_nav.view == (uint8_t)MENU_VIEW_CURVE)
+    {
+      menu_draw_curve();
+    }
+    else
+    {
+      menu_draw_list();
+    }
+
+    menu_partial_row = 0U;
+    menu_need_draw = 0U;
+    return;
+  }
+
+  menu_partial_row = 0U;
+  menu_edit_partial = 0U;
   display_clear(UI_BLACK);
 
   if(menu_nav.view == (uint8_t)MENU_VIEW_EDIT)
@@ -1726,6 +1796,9 @@ static void menu_draw(void)
     menu_draw_footer("ENT SEL  PREV/NXT  HOLD BACK");
   }
 
+  /* 整屏重画之后，把页眉计数画到的位置记下来，供局部刷新判断要不要动页眉 */
+  menu_shown_selected = menu_nav.selected;
+  menu_shown_count = (menu_nav.page != NULL) ? menu_nav.page->count : 0U;
   menu_need_draw = 0U;
 }
 

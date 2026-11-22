@@ -132,7 +132,7 @@ static uint8_t power_read_vibration_level(void);
  * 打开后从 H2 串口（USART1 115200 8N1，和刷机 / logo 上传同一个口）打印 PD
  * 状态变化，插上 PD 头就能直接看到“探测 -> commit -> 请求 -> 校验”的过程。
  * 注意：logo 上传走的是同一个串口，调试期间别同时上传 logo。 */
-#define POWER_CH224A_DEBUG              (1U)
+#define POWER_CH224A_DEBUG              (0U)
 
 #if POWER_CH224A_DEBUG
 /* 上一次打出来的输入电压，用来判断"跳了一档没有" */

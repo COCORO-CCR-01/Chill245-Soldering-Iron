@@ -442,17 +442,150 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
 #define CL_DIRTY_RIGHT     (1U << 2)
 #define CL_DIRTY_BOTTOM    (1U << 3)
 #define CL_DIRTY_PROGRESS  (1U << 4)
+/* 下面三个是"局部刷新"的细粒度位：只补真正变了的那一小块，不再重铺整条背景 */
+#define CL_DIRTY_BOTTOM_SECONDS (1U << 5)   /* 只有 SLEEP 倒计时秒数变了 */
+#define CL_DIRTY_BOTTOM_VIB     (1U << 6)   /* 只有震动指示点变了 */
+#define CL_DIRTY_RIGHT_VALUE    (1U << 7)   /* 右侧块只有数值变、页码没变 */
+#define CL_DIRTY_TOP_POWER      (1U << 8)   /* 顶栏只有功率变，走增量不重铺整条 */
 
 static int cl_last_tip = -1;
 static int cl_last_power = -1;
 static uint8_t cl_last_set;
 static uint8_t cl_last_valid;
-static uint8_t cl_last_pair;
 static const char *cl_last_top;
 static const char *cl_last_status;
 static int cl_last_seconds = -1;
 static uint8_t cl_last_vibration;
-static uint32_t cl_last_right_ms;
+/* 右侧轮播块上一次"真正画上去的内容"：页码 + 两个值的整数形式，见
+ * maindash_classic_right_signature()。以前没有可比对的东西，只能每 500ms 无脑重画
+ * 整块，这就是右边必然闪烁的直接原因。 */
+static uint8_t cl_last_right_pair;
+static int cl_last_right_a = -1;
+static int cl_last_right_b = -1;
+/* 上一拍读到、还没确认的候选值。VIN / 冷端是 10ms 刷新的瞬时 ADC 值，没有滤波，
+ * 加热时输入端约 2.5V 峰峰的纹波会把 0.1V / 0.1C 那一位来回推过边界，签名每拍都
+ * 变就等于整块 4Hz 重画，还是闪。改成"同一个显示值连续两拍读到"才认它是真变了，
+ * 来回抖动的值永远过不了这道闸。 */
+static int cl_pend_right_a = -1;
+static int cl_pend_right_b = -1;
+
+/* maindash_patch_bg 定义在后面（底栏那一段前面），这里先声明给顶栏增量用 */
+static void maindash_patch_bg(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
+/* 顶栏增量刷新用到的两个几何缓存：功率条宽度和百分比数字的像素宽。
+ * 整页重绘和增量两条路最后都会走到 cache 段，屏上画的就是这两个值推出来的内容。 */
+static uint16_t cl_last_fill_width;
+static uint8_t cl_last_percent_w;
+
+/* 把一段矩形铺成"功率条以内是粉色、条以外是背景"。
+ * 用它代替整条 160x12 的 wallpaper_blit，一次重绘从 3840 字节降到几十~几百字节。 */
+static void maindash_top_patch_span(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                    uint16_t fill_width)
+{
+  uint16_t pink_w;
+
+  maindash_patch_bg(x, y, w, h);
+
+  if((w != 0U) && (fill_width > x))
+  {
+    pink_w = (uint16_t)(fill_width - x);
+    if(pink_w > w)
+    {
+      pink_w = w;
+    }
+
+    display_fill_rect(x, y, pink_w, h, UI_PINK);
+  }
+}
+
+/* 只有功率变了的时候走这里。
+ *
+ * 原来每次功率百分比变化都是：wallpaper_blit 重铺整条 160x12（3840 字节）+ Chill245
+ * + 状态字 + 百分比三段文字全部重画，合计约 9.5KB ≈ 8ms SPI，期间顶栏是"先空一下
+ * 再画回来"。加热时功率百分比一直在变，顶部右侧就跟着一直闪。
+ *
+ * 改成只动三处：
+ *   1) 旧宽度到新宽度之间的那几列；
+ *   2) 被这几列扫到的字 —— 功率条会从字底下扫过去，字在条内是粉底、条外是黑底，
+ *      底色必须跟着变，所以只有真的压到字才重画那个字，没扫到一个像素不动；
+ *   3) 右上角的百分比数字（内容变了必须画；擦除取新旧位置并集，位数变化不留尾巴）。 */
+static void maindash_classic_top_power_draw(const sm_status_t *status)
+{
+  uint16_t new_fill;
+  uint16_t lo;
+  uint16_t hi;
+  const char *top_state;
+  uint16_t top_color;
+  uint16_t brand_end;
+  uint16_t state_end;
+  char text[20];
+  uint16_t w;
+  uint16_t x;
+  uint16_t ex;
+  uint16_t old_x;
+
+  new_fill = (uint16_t)(((uint16_t)status->power * 160U) / 100U);
+  top_state = maindash_top_state(status, &top_color);
+
+  if(new_fill != cl_last_fill_width)
+  {
+    if(new_fill < cl_last_fill_width)
+    {
+      lo = new_fill;
+      hi = cl_last_fill_width;
+    }
+    else
+    {
+      lo = cl_last_fill_width;
+      hi = new_fill;
+    }
+
+    maindash_top_patch_span(lo, 0U, (uint16_t)(hi - lo), 12U, new_fill);
+
+    /* 条的边界扫过字底下才重画那个字，顺便把底色改对 */
+    brand_end = (uint16_t)(2U + display_string_width("Chill245", 2U));
+    if(lo < brand_end)
+    {
+      maindash_classic_top_text(2U, 1U, "Chill245", 2U, UI_WHITE, new_fill);
+    }
+
+    state_end = (uint16_t)(80U + display_string_width(top_state, 2U));
+    if((hi > 80U) && (lo < state_end))
+    {
+      maindash_classic_top_text(80U, 1U, top_state, 2U, top_color, new_fill);
+    }
+  }
+  else
+  {
+    state_end = (uint16_t)(80U + display_string_width(top_state, 2U));
+  }
+
+  /* 百分比数字：右对齐到 158，位置随字宽走，所以擦除要盖住新旧两个位置 */
+  fmt_snprintf(text, sizeof(text), "%u%%", (unsigned)status->power);
+  w = (uint16_t)display_string_width(text, 2U);
+  x = (uint16_t)(158U - w);
+  ex = x;
+
+  if(cl_last_percent_w != 0U)
+  {
+    old_x = (uint16_t)(158U - (uint16_t)cl_last_percent_w);
+    if(old_x < ex)
+    {
+      ex = old_x;
+    }
+  }
+
+  maindash_top_patch_span(ex, 1U, (uint16_t)(158U - ex), 10U, new_fill);
+
+  /* 状态字比较长的时候会一直伸到百分比这一带来，擦百分比会削掉它的尾巴。整页重绘的
+   * 顺序是"先状态字后百分比"，这里保持一致：有重叠就把状态字补回来再画百分比。 */
+  if(state_end > ex)
+  {
+    maindash_classic_top_text(80U, 1U, top_state, 2U, top_color, new_fill);
+  }
+
+  maindash_classic_top_text(x, 1U, text, 2U, UI_WHITE, new_fill);
+}
 
 static void maindash_classic_top_draw(const sm_status_t *status)
 {
@@ -514,11 +647,43 @@ static void maindash_classic_temp_draw(const sm_status_t *status, uint32_t now_m
   display_draw_string_transparent(66U, 28U, "C", UI_WHITE, 2U);
 }
 
+/* 右侧轮播块"这一屏要显示成什么样"的整数签名，只拿来做脏判断。
+ * 取值必须和 maindash_classic_right_draw() 画上去的内容严格一致：
+ *   pair 0（SET / MODE）：a = 设定温度取整到 1C，b = PID 模式档位
+ *   pair 1（VIN / COLD）：a = 输入电压截断到 0.1V（和显示的 %d.%dV 一致），
+ *                         b = 冷端温度取整到 0.1C（和显示的 %d.%dC 一致）
+ * 签名相同就说明屏上内容一模一样，整块一个像素都不用动。 */
+static void maindash_classic_right_signature(const sm_status_t *status, uint8_t pair,
+                                             int *a, int *b)
+{
+  if(pair == 0U)
+  {
+    *a = maindash_round_float(status->setpoint_c);
+    *b = (int)status->mode;
+  }
+  else
+  {
+    *a = (int)(power_get_voltage_mv() / 100U);
+    *b = maindash_round_float(status->room_c * 10.0f);
+  }
+}
+
 static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_ms)
 {
   uint8_t pair;
   char value[20];
 
+  /* 整块重铺，不能改成按元素窄槽擦（a2f64ae 试过，已退回）。
+   *
+   * 右侧块的真实边界是 x 76..159、y 14..62：整屏绘制时左半边只铺到 x 0..73 /
+   * y 13..62，底栏从 y 64 起，中间这一整块归右侧轮播。a2f64ae 想按元素省字节，
+   * 只擦了标签槽（78..101 各 24x6）和数值槽（104..159 各 56x16），结果 x 76..77、
+   * y 31..37、y 54..62 以及标签四周那些行列全落在槽外的擦不到的死角，用户实测
+   * VIN / COLD 有上一次的色彩残留。
+   *
+   * 省字节的大头本来也不在这里：047a023 的"值变了才画"和 e925005 的防抖已经把
+   * 重画次数从每 500ms 一次降到真的变了才画，这里每次重画就是 8232 字节整块铺，
+   * 覆盖 100% 无死角，正确性优先。要再往下省，得先有办法证明哪一块绝对不会落墨。 */
   wallpaper_blit(76U, 14U, 84U, 49U);
   pair = (uint8_t)((now_ms / 2000U) & 1U);
 
@@ -552,15 +717,67 @@ static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_
   }
 }
 
+/* 只把"要重写的那一小块"背景铺好：有壁纸回填壁纸，没壁纸刷黑。
+ * 用来取代整条 / 整块的 wallpaper_blit —— 那是闪烁的主因：一次重铺 4160 字节
+ * （底栏 160x13）或 8232 字节（右块 84x49），期间屏幕上是"先空一下再画回来"。 */
+static void maindash_patch_bg(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+{
+  if(w == 0U)
+  {
+    return;
+  }
+
+  if((uint16_t)(x + w) > DISPLAY_WIDTH)
+  {
+    w = (uint16_t)(DISPLAY_WIDTH - x);
+  }
+
+  if(w == 0U)
+  {
+    return;
+  }
+
+  if(wallpaper_is_available() != 0U)
+  {
+    wallpaper_blit(x, y, w, h);
+  }
+  else
+  {
+    display_fill_rect(x, y, w, h, UI_BLACK);
+  }
+}
+
+/* SLEEP 倒计时：每秒都要更新，原来每次都是整条底栏重铺 + 图标和三段文字全部重画，
+ * 所以"下面 sleep 右边的时间"每秒闪一下。改成只擦只画秒数自己那一块，擦除宽度取
+ * 新旧两个宽度里大的那个，位数变短（120s -> 99s）才不会留尾巴。 */
+static uint8_t cl_last_seconds_w;
+
+static void maindash_classic_bottom_seconds_draw(uint32_t seconds)
+{
+  char value[12];
+  uint16_t w;
+  uint16_t erase_w;
+
+  fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
+  w = (uint16_t)display_string_width(value, 1U);
+  erase_w = (w > (uint16_t)cl_last_seconds_w) ? w : (uint16_t)cl_last_seconds_w;
+
+  maindash_patch_bg(114U, 66U, erase_w, 5U);
+  display_draw_string_transparent(114U, 66U, value, UI_PINK, 1U);
+  cl_last_seconds_w = (uint8_t)w;
+}
+
+/* 震动指示点：4x4，直接整块覆盖就行，不用擦背景 */
+static void maindash_classic_bottom_vib_draw(uint8_t vibration)
+{
+  display_fill_rect(107U, 68U, 4U, 4U, (vibration != 0U) ? UI_PINK : UI_DARK);
+}
+
 static void maindash_classic_bottom_draw(const sm_status_t *status)
 {
   const char *status_text;
   uint16_t status_color;
   ui_icon_t status_icon = UI_ICON_POWER;
-  char value[20];
-  uint32_t remaining_ms;
-  uint32_t seconds;
-  uint8_t vibration;
 
   wallpaper_blit(0U, 64U, DISPLAY_WIDTH, 13U);
   status_text = maindash_status_text(status, &status_color);
@@ -573,14 +790,11 @@ static void maindash_classic_bottom_draw(const sm_status_t *status)
   ui_icon_draw(status_icon, 2U, 65U, status_color);
   display_draw_string_transparent(12U, 66U, status_text, status_color, 2U);
 
-  remaining_ms = power_get_sleep_remaining_ms();
-  seconds = (remaining_ms + 999U) / 1000U;
-  vibration = power_get_vibration_state();
+  /* SLEEP 标签只在整条重画时画一次；秒数和震动点各自有局部刷新的小函数 */
   display_draw_string_transparent(84U, 66U, "SLEEP", UI_BLUE, 1U);
-  display_fill_rect(107U, 68U, 4U, 4U,
-                    (vibration != 0U) ? UI_PINK : UI_DARK);
-  fmt_snprintf(value, sizeof(value), "%lus", (unsigned long)seconds);
-  display_draw_string_transparent(114U, 66U, value, UI_PINK, 1U);
+  maindash_classic_bottom_vib_draw(power_get_vibration_state());
+  maindash_classic_bottom_seconds_draw(
+    (power_get_sleep_remaining_ms() + 999U) / 1000U);
 }
 
 static void maindash_classic_progress_draw(const sm_status_t *status)
@@ -604,6 +818,10 @@ static void maindash_classic_partial(const sm_status_t *status, uint32_t now_ms,
   {
     maindash_classic_top_draw(status);
   }
+  else if((mask & CL_DIRTY_TOP_POWER) != 0U)
+  {
+    maindash_classic_top_power_draw(status);
+  }
   if((mask & CL_DIRTY_TEMP) != 0U)
   {
     maindash_classic_temp_draw(status, now_ms);
@@ -615,6 +833,19 @@ static void maindash_classic_partial(const sm_status_t *status, uint32_t now_ms,
   if((mask & CL_DIRTY_BOTTOM) != 0U)
   {
     maindash_classic_bottom_draw(status);
+  }
+  else
+  {
+    /* 底栏按字段局部刷新：状态文字没变时，秒数和震动点各补自己那一小块 */
+    if((mask & CL_DIRTY_BOTTOM_SECONDS) != 0U)
+    {
+      maindash_classic_bottom_seconds_draw(
+        (power_get_sleep_remaining_ms() + 999U) / 1000U);
+    }
+    if((mask & CL_DIRTY_BOTTOM_VIB) != 0U)
+    {
+      maindash_classic_bottom_vib_draw(power_get_vibration_state());
+    }
   }
   if((mask & CL_DIRTY_PROGRESS) != 0U)
   {
@@ -634,14 +865,15 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   uint16_t status_color;
   uint32_t seconds;
   uint8_t vibration;
+  int right_a;
+  int right_b;
+  /* 必须在函数开头就声明并清零：整页重绘那条路是 goto cache 收尾，声明放晚了
+     cache 段读到的是没初始化的值 */
+  uint8_t right_dirty = 0U;
 
-  if(maindash_force_full != 0U)
-  {
-    maindash_force_full = 0U;
-    maindash_classic_draw(status, now_ms);
-    goto cache;
-  }
-
+  /* 先把这一帧"要显示成什么样"全部算出来，再决定哪一块需要画。这段必须放在整页
+   * 重绘分支之前：那个分支用 goto cache 收尾，算晚了存进缓存的就是没初始化的值
+   * （原来就是这个顺序，整页重绘之后 cl_last_pair 那几个缓存拿到的是栈上的垃圾）。 */
   show_set = ((int32_t)(maindash_setpoint_hint_until_ms - now_ms) > 0) ? 1U : 0U;
   tip_c = show_set ? maindash_round_float(status->setpoint_c) :
           ((status->temp_valid != 0U) ? maindash_round_float(status->tip_c) : 0);
@@ -652,6 +884,19 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   status_text = maindash_status_text(status, &status_color);
   seconds = (power_get_sleep_remaining_ms() + 999U) / 1000U;
   vibration = power_get_vibration_state();
+  maindash_classic_right_signature(status, pair, &right_a, &right_b);
+
+  if(maindash_force_full != 0U)
+  {
+    maindash_force_full = 0U;
+    maindash_classic_draw(status, now_ms);
+    /* 整页重绘已经把当前值画上去了，缓存照实记，别等下一帧的脏判断去猜 */
+    cl_last_right_a = right_a;
+    cl_last_right_b = right_b;
+    cl_pend_right_a = right_a;
+    cl_pend_right_b = right_b;
+    goto cache;
+  }
 
   if((show_set != cl_last_set) ||
      (tip_c != cl_last_tip) ||
@@ -659,28 +904,69 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= CL_DIRTY_TEMP;
   }
-  if((int)status->power != cl_last_power)
+  /* 顶栏分两档：状态字（连同颜色）变了走整条重画；只有功率变了走增量 ——
+   * 只补"旧宽度到新宽度那几列 + 右上角百分比"，不再重铺整条 160x12 背景
+   * （3840 字节）+ 三段文字全部重画（合计约 9.5KB ≈ 8ms SPI）。加热时功率百分比
+   * 一直在变，那一档以前每次都是整条"先空一下再画回来"，顶部右侧就跟着闪。 */
+  if(top_state != cl_last_top)
   {
     mask |= CL_DIRTY_TOP | CL_DIRTY_PROGRESS;
   }
-  if((top_state != cl_last_top) || (pair != cl_last_pair))
+  else if((int)status->power != cl_last_power)
   {
-    mask |= CL_DIRTY_TOP;
+    mask |= CL_DIRTY_TOP_POWER | CL_DIRTY_PROGRESS;
   }
-  if((uint32_t)(now_ms - cl_last_right_ms) >= 500U)
-  {
-    mask |= CL_DIRTY_RIGHT;
-    cl_last_right_ms = now_ms;
-  }
-  if((status_text != cl_last_status) ||
-     ((int)seconds != cl_last_seconds) ||
-     (vibration != cl_last_vibration))
+  /* 底栏分字段判脏：状态文字（连同图标、颜色）变了才重铺整条；只有倒计时或只有
+   * 震动点变了，就各补自己那一小块。SLEEP 倒计时每秒都变，以前每秒重铺整条底栏
+   * 160x13（4160 字节）+ 图标和全部文字重画，就是用户说的"下面 sleep 右边的时间"
+   * 每秒必闪。 */
+  if(status_text != cl_last_status)
   {
     mask |= CL_DIRTY_BOTTOM;
   }
-  if(pair != cl_last_pair)
+  else
+  {
+    if((int)seconds != cl_last_seconds)
+    {
+      mask |= CL_DIRTY_BOTTOM_SECONDS;
+    }
+
+    if(vibration != cl_last_vibration)
+    {
+      mask |= CL_DIRTY_BOTTOM_VIB;
+    }
+  }
+  /* 右侧轮播块改成"值变了才画"：页码变了，或者这一屏真正要显示的两个值变了，才标脏。
+   * 原来这里没有任何值判断，(now_ms - cl_last_right_ms) >= 500 就重画整块 —— 
+   * wallpaper_blit 重铺 84x49 背景 + 6 段文字 + 一条分隔线，2Hz 的整块擦掉重画，
+   * 就是用户反馈"右边必然闪"的直接原因。签名和画上去的内容严格一致（VIN 精确到
+   * 0.1V、冷端 0.1C、设定温度 1C、MODE 档位），这些真变了照样立刻刷新，
+   * 没变就一个像素都不动。 */
+  if(pair != cl_last_right_pair)
+  {
+    /* 2 秒轮播换页，两屏内容完全不同，整块重画是必须的 */
+    right_dirty = 1U;
+  }
+  else if((right_a != cl_last_right_a) || (right_b != cl_last_right_b))
+  {
+    if((right_a == cl_pend_right_a) && (right_b == cl_pend_right_b))
+    {
+      /* 上一拍也是这个值，认定是真的变了 */
+      right_dirty = 1U;
+    }
+    else
+    {
+      /* 先记下候选值，下一拍再确认，专门挡 VIN / 冷端最低位的来回抖动 */
+      cl_pend_right_a = right_a;
+      cl_pend_right_b = right_b;
+    }
+  }
+
+  if(right_dirty != 0U)
   {
     mask |= CL_DIRTY_RIGHT;
+    cl_pend_right_a = right_a;
+    cl_pend_right_b = right_b;
   }
 
   if(mask != 0U)
@@ -691,9 +977,27 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
 cache:
   cl_last_tip = tip_c;
   cl_last_power = (int)status->power;
+
+  /* 顶栏增量刷新的两个几何缓存：屏上此刻的功率条宽度和百分比数字像素宽。整页重绘
+   * 和增量两条路都收在这里，所以这两个值始终等于屏上真实画出来的内容。 */
+  cl_last_fill_width = (uint16_t)(((uint16_t)status->power * 160U) / 100U);
+  {
+    char percent[12];
+
+    fmt_snprintf(percent, sizeof(percent), "%u%%", (unsigned)status->power);
+    cl_last_percent_w = (uint8_t)display_string_width(percent, 2U);
+  }
   cl_last_set = show_set;
   cl_last_valid = status->temp_valid;
-  cl_last_pair = pair;
+  cl_last_right_pair = pair;
+  /* cl_last_right_a/b 记的是"屏上此刻画的是什么"，只有真的重画过才更新：无条件更新
+   * 会让防抖把自己骗过去（记了新值，屏上还是旧的，之后就再也不画了）。
+   * 整页重绘那条 goto 已经在重画后单独赋过值。 */
+  if(right_dirty != 0U)
+  {
+    cl_last_right_a = right_a;
+    cl_last_right_b = right_b;
+  }
   cl_last_top = top_state;
   cl_last_status = status_text;
   cl_last_seconds = (int)seconds;

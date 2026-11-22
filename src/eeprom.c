@@ -291,7 +291,9 @@ void eeprom_capture_current(void)
     (float)power_get_stationary_timeout_ms() / 1000.0f;
   g_eeprom_params.sleep_power_pct =
     (float)power_get_low_power_threshold();
-  appcolors_get_all(g_eeprom_params.app_colors);
+  /* 存基准板，不存生效板：生效板可能已经被浅色叠加改过，存回去就把浅色文字色固化成
+   * 了默认值（用户实测"白色切回黑色必坏，只有恢复出厂能救"的根因） */
+  appcolors_get_base_all(g_eeprom_params.app_colors);
   g_eeprom_params.reduced_temp_c = power_get_reduced_temperature();
   g_eeprom_params.reduced_off_s =
     (float)power_get_reduced_off_timeout_ms() / 1000.0f;
@@ -342,6 +344,12 @@ void eeprom_apply(void)
   if(g_eeprom_params.ui_light != 0U)
   {
     appcolors_apply_light_defaults();
+  }
+  else
+  {
+    /* 暗色模式：顺手把被老版本逻辑污染过的基准板（浅色叠加被当成默认存进 EEPROM 的
+     * 存档）丢回出厂暗色板，用户不用再靠恢复出厂设置来治 */
+    appcolors_heal_dark_base();
   }
 
   /* 整定过程中不要改设定温度/PID/标定，避免破坏整定 */
