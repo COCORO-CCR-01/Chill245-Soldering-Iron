@@ -208,13 +208,27 @@ void bootguard_task(uint32_t now_ms)
       return;
   }
 
-  if((bootguard_last_draw == 0U) ||
-     ((status.temp_valid != 0U) &&
-      ((int)(status.tip_c + 0.5f) != bootguard_last_temp)))
+  /* 只有真的会把温度画到屏幕上的状态，温度变化才算重画的理由。
+   *
+   * BOOTGUARD_HOLD 画的是 BOOT HOLD / HEAT OFF / PREV/NEXT / START / HOLD MENU
+   * SETUP，BOOTGUARD_WAIT 只有一个 WAIT，全是固定文字，一个数字都没有；原来这里
+   * 不分状态一律"整数温度变了就重画"，而 bootguard_draw() 开头是整屏
+   * display_fill_rect(0,0,160,80)（25600 字节），烙铁靠环境温度漂个 1°C 就把整个
+   * HOLD 界面刷黑重铺一遍 —— 这就是 boot HOLD 界面一直闪的原因。
+   * 换状态的地方都会把 bootguard_last_draw 清 0，所以该重画的一次都不会少。 */
   {
-    bootguard_draw(&status);
-    bootguard_last_draw = (now_ms == 0U) ? 1U : now_ms;
-    bootguard_last_temp = (status.temp_valid != 0U) ?
-                          (int)(status.tip_c + 0.5f) : -1;
+    uint8_t temp_shown = (bootguard_state == BOOTGUARD_HIGH) ? 1U : 0U;
+    uint8_t temp_changed = ((status.temp_valid != 0U) &&
+                            ((int)(status.tip_c + 0.5f) != bootguard_last_temp))
+                           ? 1U : 0U;
+
+    if((bootguard_last_draw == 0U) ||
+       ((temp_shown != 0U) && (temp_changed != 0U)))
+    {
+      bootguard_draw(&status);
+      bootguard_last_draw = (now_ms == 0U) ? 1U : now_ms;
+      bootguard_last_temp = (status.temp_valid != 0U) ?
+                            (int)(status.tip_c + 0.5f) : -1;
+    }
   }
 }
