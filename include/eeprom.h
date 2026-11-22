@@ -22,7 +22,7 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x000EU)
+#define EEPROM_FORMAT_VERSION           (0x0010U)
 
 /**
   * @brief  所有掉电保存参数
@@ -55,8 +55,12 @@ typedef struct
   float voltage_trip_ms;
   float voltage_recovery_ms;
 
+  /* 菜单 PD VOLT 存的选项号：0 = AUTO（去谈这颗供电能给的最高档），1 = 15V，
+   * 2 = 20V。只放开这三档，低压 PMOS 发热大，整机不在 15V 以下工作。
+   * 字段名叫 index 是历史原因（最早直接存 CH224A 寄存器索引），别再拿它直接往
+   * 0x0A 写，要过 power_pd_option_to_index()。 */
   uint8_t ch224a_index;
-  uint8_t maindash_alt;
+  uint8_t maindash_alt;         /* 已废弃：ALT DASH 备用主界面已删除，字段保留占位，勿复用 */
   uint8_t ui_light;
   uint8_t display_left_hand;
   uint8_t boot_hold_enabled;

@@ -428,19 +428,27 @@ void eeprom_init(void)
     eeprom_capture_current();
     eeprom_loaded_valid = 0U;
 
-    /* 无有效记录：OneKeyBoost/步进默认值 */
+    /* 无有效记录 = 首次开机、没有任何用户记忆，这里才是出厂默认值 */
     g_eeprom_params.boost_offset_c = 100.0f;
     g_eeprom_params.boost_drop_c = 20.0f;
     g_eeprom_params.boost_timeout_s = 300.0f;
-    g_eeprom_params.setpoint_step_c = 5.0f;
+    g_eeprom_params.setpoint_step_c = 30.0f;   /* 温度步进 30 度 */
     g_eeprom_params.time_step_s = 5.0f;
+    g_eeprom_params.ch224a_index = 0U;         /* PD VOLT = AUTO：开机谈最高档 */
+    /* 首次开机只给 60 度：刚上手的用户不知道烙铁头已经通电，先给一个烫不伤人的
+     * 温度，他自己调高之后会被记住，以后不再动。 */
+    g_eeprom_params.setpoint_c = 60.0f;
     g_eeprom_params.maindash_alt = 0U;
     g_eeprom_params.ui_light = 0U;
     g_eeprom_params.display_left_hand = 0U;
     g_eeprom_params.boot_hold_enabled = 1U;
     g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;
-    g_eeprom_params.max_power_pct = 100.0f;
+    g_eeprom_params.max_power_pct = 50.0f;     /* 默认功率比例 50% */
+    /* 欠压门限 13.5V：20V 合同被打回 15V 默认档还算能用，不该报欠压；13.5V 以下
+     * 才是供电真的不行了。PD VOLT 只放开 15V / 20V，最低允许档实测 14.9V 就在这条
+     * 线之上，所以门限不需要跟着档位变。 */
+    g_eeprom_params.low_voltage_v = 13.5f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;
     g_eeprom_params.app_colors[0] = 0xFC9FU;

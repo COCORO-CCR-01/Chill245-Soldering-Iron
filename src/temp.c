@@ -29,6 +29,14 @@
 
 #define TEMP_ADC_FULL_SCALE             (4095.0f)
 
+/* 热偶开路判定上限。热偶没插（开路）时，测量输入被上拉到 3.3V，换算出来是一个毫无
+ * 意义的最高值 —— 这种时候温度数字没有任何参考价值。整机最高设定温度 450°C，真实
+ * 温度不可能到 580°C，所以过滤后的读数超过 580°C 一律判为无效：
+ *   - 主界面 / 曲线页看到 valid=0 就画 "---"；
+ *   - pid_update() 看到 valid=0 直接返回 0% 功率，不会拿假温度去闭环；
+ *   - 休眠、开机判温等地方也一样不当数用。 */
+#define TEMP_TIP_C_OPEN_CIRCUIT         (580.0f)
+
 #define TEMP_NTC_TABLE_MIN_C            PRESET_NTC_TABLE_MIN_C
 #define TEMP_NTC_TABLE_STEP_C           PRESET_NTC_TABLE_STEP_C
 #define TEMP_NTC_TABLE_POINTS           PRESET_NTC_TABLE_POINTS
@@ -600,7 +608,10 @@ void temp_update_fast(const adc_raw_data_t *adc_raw,
                                       TEMP_TC_FILTER_ALPHA);
 
   temp->tip_c = temp_tip_filtered_c;
-  temp->valid = 1U;
+
+  /* 热偶开路时这里会算出一个离谱的高值，按无效处理，界面上显示 "---"，
+   * 控制环也拿不到这个假温度。详见 TEMP_TIP_C_OPEN_CIRCUIT。 */
+  temp->valid = (temp_tip_filtered_c > TEMP_TIP_C_OPEN_CIRCUIT) ? 0U : 1U;
 }
 
 void temp_update(const adc_raw_data_t *adc_raw, temp_data_t *temp)

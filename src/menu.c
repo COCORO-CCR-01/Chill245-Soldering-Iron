@@ -21,6 +21,7 @@
 #include "version.h"
 #include "bootguard.h"
 #include "statemachine.h"
+#include "heater.h"
 #include "pid.h"
 #include "temp.h"
 #include "verifyheater.h"
@@ -138,6 +139,19 @@ static const char *const menu_pid_mode_options[] =
   "STD", "BOOST", "CUSTOM"
 };
 
+/* PD VOLT：菜单存的是"选项号"，0 = AUTO，1 = 15V，2 = 20V，换算表在
+ * power_pd_option_to_index()。只放这三档：电压越低，同样功率下 PMOS 导通电阻上的
+ * 损耗和发热越大，整机不在 15V 以下工作，所以 12V / 9V / 5V 不提供选择，AUTO 的
+ * 自动降档也只降到 15V。28V 同样不给选（整机没按 20V 以上设计）。
+ * AUTO 由 power_pd_slot_task() 读这颗供电方的 Source_Capabilities 挑最高档；
+ * 谈不下来、或者把它拉得掉压重启，就自动往下退一档，止步 15V。
+ * 选完不需要确认也不需要重启：主循环里看到目标档变了，就交给
+ * power_pd_watchdog() 非阻塞地 commit -> 重写 -> 校验。 */
+static const char *const menu_pd_volt_options[] =
+{
+  "AUTO", "15V", "20V"
+};
+
 
 static void menu_action_back(void);
 static void menu_action_sleep(void);
@@ -146,6 +160,7 @@ static void menu_action_autotune(void);
 static void menu_action_cancel_autotune(void);
 static void menu_action_clear_fault(void);
 static void menu_action_heater_toggle(void);
+static void menu_action_stop_heat(void);
 static void menu_action_hms(void);
 static void menu_action_defaults(void);
 static void menu_action_tip_cal(void);
@@ -182,7 +197,9 @@ static const menu_item_t menu_sleep_items[] =
   { "HEAT OFF T",   MENU_ITEM_FLOAT, &menu_config.reduced_off_s,     NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },
   { "LCD OFF T",    MENU_ITEM_FLOAT, &menu_config.backlight_off_s,   NULL, NULL, 0, 5.0f,   5.0f,   7200.0f, 0U, "s",  NULL },
   { "MAX POWER",    MENU_ITEM_FLOAT, &menu_config.max_power_pct,      NULL, NULL, 0, 5.0f,  10.0f, 100.0f, 0U, "%", NULL },
-  { "LOW VOLT",     MENU_ITEM_FLOAT, &menu_config.low_voltage_v,     NULL, NULL, 0, 0.5f,   5.0f,   30.0f,   1U, "V",  NULL },
+  /* 这里原来是 LOW VOLT：输入电压现在是 PD 谈出来的，用户在这页能动的只有
+   * "要哪一档"；欠压阈值挪到 POWER SETUP 服务页里去改。 */
+  { "PD VOLT",      MENU_ITEM_ENUM,  &menu_config.ch224a_index,      NULL, menu_pd_volt_options, 3U, 1.0f, 0.0f, 2.0f, 0U, "", NULL },
   { "HIGH VOLT",    MENU_ITEM_FLOAT, &menu_config.high_voltage_v,    NULL, NULL, 0, 0.5f,   20.0f,  40.0f,   1U, "V",  NULL },
   { "VOLT HYST",    MENU_ITEM_FLOAT, &menu_config.voltage_hysteresis_v, NULL, NULL, 0, 0.1f, 0.0f,   3.0f,    1U, "V",  NULL },
   { "TRIP TIME",    MENU_ITEM_FLOAT, &menu_config.voltage_trip_ms,   NULL, NULL, 0, 10.0f,  10.0f,  5000.0f, 0U, "ms", NULL },
@@ -193,6 +210,13 @@ static const menu_item_t menu_sleep_items[] =
 
 static const menu_item_t menu_power_service_items[] =
 {
+  /* 这一页就是从欠压故障界面长按 MENU 进来的那个"受限电源设置"，所以 PD VOLT 放
+     第一条：供电顶不住报欠压的时候，第一件要改的事就是"换个档位，或者交给 AUTO
+     自己去挑这颗头能给到哪一档"。
+     和 SLEEP / POWER 页里那条是同一个变量（menu_config.ch224a_index），改哪边都
+     一样：主循环里的 power_pd_slot_task() 每拍都在跟，改完立刻交给 watchdog 去重谈，
+     不用退出菜单、也不用重启。 */
+  { "PD VOLT",   MENU_ITEM_ENUM,  &menu_config.ch224a_index, NULL, menu_pd_volt_options, 3U, 1.0f, 0.0f, 2.0f, 0U, "", NULL },
   { "LOW VOLT",  MENU_ITEM_FLOAT, &menu_config.low_voltage_v, NULL, NULL, 0, 0.5f,  5.0f,  30.0f,  1U, "V", NULL },
   { "MAX POWER", MENU_ITEM_FLOAT, &menu_config.max_power_pct, NULL, NULL, 0, 5.0f, 10.0f, 100.0f, 0U, "%", NULL },
   { "BACK",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back },
@@ -223,7 +247,6 @@ static const menu_item_t menu_ui_items[] =
   { "BUZZER",    MENU_ITEM_BOOL,  &menu_config.buzzer_enabled,   NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "VOLUME",    MENU_ITEM_FLOAT, &menu_config.buzzer_volume,    NULL, NULL, 0, 10.0f, 0.0f, 100.0f, 0U, "%", NULL },
   { "MAIN PAGE", MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_main_page },
-  { "ALT DASH",  MENU_ITEM_BOOL,  &menu_config.maindash_alt, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "LIGHT MODE", MENU_ITEM_BOOL, &menu_config.ui_light,      NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "LEFT HAND",  MENU_ITEM_BOOL, &menu_config.display_left_hand, NULL, NULL, 0, 1.0f, 0.0f, 1.0f, 0U, "", NULL },
   { "BOOT LOGO", MENU_ITEM_FLOAT, &menu_config.bootlogo_delay_s, NULL, NULL, 0, 1.0f, 0.0f, 10.0f, 0U, "s", NULL },
@@ -294,6 +317,7 @@ static const menu_page_t menu_page_system =
 
 static const menu_item_t menu_root_items[] =
 {
+  { "STOP HEAT",     MENU_ITEM_ACTION,  NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_stop_heat },
   { "TEMPERATURE",   MENU_ITEM_SUBMENU, NULL, &menu_page_temperature, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "BOOST",         MENU_ITEM_SUBMENU, NULL, &menu_page_boost,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "SLEEP / POWER", MENU_ITEM_SUBMENU, NULL, &menu_page_sleep,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
@@ -966,6 +990,24 @@ static void menu_action_heater_toggle(void)
 {
   (void)sm_set_heater_enabled((sm_is_heater_enabled() != 0U) ? 0U : 1U);
   menu_need_draw = 1U;
+}
+
+/* 停止加热：给用户的"立刻停下"。放在菜单第一页第一条，闭着眼也能按到。
+ *
+ * 和 PROTECTION / SYSTEM 页里的 HEATER ON/OFF 的区别是方向：那个是开关，手抖多按
+ * 一下就可能反过来把加热打开；这个只做"关"，按多少次都还是停 —— 作为保护动作，
+ * 方向必须唯一，不能因为连点变成反向操作。
+ *
+ * 关完直接退出菜单，回到主界面好让人盯着温度往下掉；heater_force_off() 是硬关
+ * PWM，不等下一个控制周期，响应快一拍。
+ *
+ * 恢复加热：回主界面按任意键（main.c 里的手动恢复路径），或者长按 PREV。 */
+static void menu_action_stop_heat(void)
+{
+  (void)sm_set_heater_enabled(0U);
+  heater_force_off();
+  buzzer_play(BUZZER_SOUND_KEY);
+  menu_close();
 }
 
 static void menu_action_hms(void)

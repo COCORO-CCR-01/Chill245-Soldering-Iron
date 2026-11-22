@@ -176,6 +176,23 @@ static void main_buttons(button_id_t button, button_event_t event)
     return;
   }
 
+  /* 长按 MENU：从主界面直接进设置菜单（menu.c 文件头一直写着"MENU 长按 2s 进入
+   * 菜单"，但主界面这边以前没注册这个事件，只有开机联锁界面能进）。
+   * 长按不会再补一次短按 —— buttons.c 里 long_sent 会吃掉抬起时的那次 CLICK，
+   * 所以不会出现"先翻一页再进菜单"。进菜单前先唤醒屏幕，熄屏状态下长按也能进。 */
+  if((button == BUTTON_MENU) && (event == BUTTON_EVENT_LONG_PRESS))
+  {
+    if((power_get_state() == POWER_STATE_BACKLIGHT_OFF) ||
+       (power_get_state() == POWER_STATE_REDUCED))
+    {
+      power_wake();
+    }
+
+    menu_open();
+    buzzer_play(BUZZER_SOUND_KEY);
+    return;
+  }
+
   if((button == BUTTON_NEXT) && (event == BUTTON_EVENT_CLICK))
   {
     /* 深度休眠的第一次 NEXT 只负责唤醒屏幕 */
@@ -302,6 +319,9 @@ int main(void)
   /* 按键：PA15=MENU，PB3=PREV，PB4=NEXT */
   buttons_init();
   (void)buttons_register_callback(BUTTON_MENU, BUTTON_EVENT_CLICK,
+                                  main_buttons);
+  /* 长按 MENU 进设置菜单（菜单打开后 main_buttons 直接 return，菜单自己接管按键） */
+  (void)buttons_register_callback(BUTTON_MENU, BUTTON_EVENT_LONG_PRESS,
                                   main_buttons);
   (void)buttons_register_callback(BUTTON_PREV, BUTTON_EVENT_CLICK,
                                   main_buttons);

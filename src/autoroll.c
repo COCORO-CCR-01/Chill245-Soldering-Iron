@@ -46,13 +46,6 @@ static void autoroll_draw_indicator(void)
   uint16_t x;
   uint16_t color;
 
-  /* 新版全屏主界面底部整条是温度进度条，不叠加页面指示 */
-  if((autoroll_page == AUTOROLL_PAGE_MAIN) &&
-     (g_eeprom_params.maindash_alt != 0U))
-  {
-    return;
-  }
-
   for(i = 0U; i < (uint8_t)AUTOROLL_PAGE_COUNT; i++)
   {
     x = (uint16_t)(30U + (i * 26U));
