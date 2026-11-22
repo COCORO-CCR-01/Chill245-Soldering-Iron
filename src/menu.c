@@ -142,6 +142,8 @@ static uint8_t menu_need_draw;
  * "点上下键整屏文字一起闪"的原因。 */
 static uint8_t menu_partial_row;
 static uint8_t menu_partial_prev;
+/* EDIT 视图（FLOAT 项）按加减号时：只重画中间数值框 */
+static uint8_t menu_edit_partial;
 static uint8_t menu_shown_selected;
 static uint8_t menu_shown_count;
 static uint8_t menu_long_handled;
@@ -636,10 +638,14 @@ void menu_open_quick_setpoint(void)
 
 static void menu_adjust_edit(int8_t direction)
 {
+  float prev_value;
+
   if(menu_edit_item == NULL)
   {
     return;
   }
+
+  prev_value = menu_edit_value;
 
   menu_edit_value += (menu_item_step(menu_edit_item) * (float)direction);
 
@@ -658,6 +664,15 @@ static void menu_adjust_edit(int8_t direction)
     maindash_notify_setpoint_adjusted();
   }
 
+  /* 已经顶到 min/max 还朝同一个方向按，数值一个字都没变，那就什么都不用画 ——
+   * 原来这里照样置 menu_need_draw，画面上就是一次整屏刷黑的空闪。 */
+  if(menu_edit_value == prev_value)
+  {
+    return;
+  }
+
+  /* 数值变了：只重画中间那个数值框，其余部分不动 */
+  menu_edit_partial = 1U;
   menu_need_draw = 1U;
 }
 
@@ -922,6 +937,10 @@ static void menu_enter_item(void)
           menu_pdvolt_shadow = value;
           menu_pdvolt_shadow_valid = 1U;
         }
+        /* 只是这一项的数值换了一格：只重画这一行（prev 就是当前行，列表里别的行
+         * 全部跳过），不用整屏刷黑重画；页眉计数没变也不会跟着重画。 */
+        menu_partial_row = 1U;
+        menu_partial_prev = menu_nav.selected;
         menu_need_draw = 1U;
       }
       break;
@@ -987,12 +1006,22 @@ static void menu_move(int8_t direction)
 
     menu_adjust_first();
 
-    menu_partial_row = ((menu_nav.first == prev_first) &&
-                        (prev_selected != menu_nav.selected)) ? 1U : 0U;
-    menu_partial_prev = prev_selected;
+    if((prev_selected == menu_nav.selected) && (prev_first == menu_nav.first))
+    {
+      /* 已经到列表头/尾还朝同一个方向按：选中行没动、可见窗口也没动，屏幕上要显示
+       * 的东西一个都没变，那就什么都不画。原来这里照样置 menu_need_draw，于是整屏
+       * 刷黑重画一遍 —— 这就是"到最上/最下一条再按上或下必然闪"的原因。 */
+      menu_partial_row = 0U;
+    }
+    else
+    {
+      /* 可见窗口没变（中间那些行挪一格）：只重画旧选中行和新选中行两行；
+       * 窗口变了（滚动过）就照旧整屏重画。 */
+      menu_partial_row = (menu_nav.first == prev_first) ? 1U : 0U;
+      menu_partial_prev = prev_selected;
+      menu_need_draw = 1U;
+    }
   }
-
-  menu_need_draw = 1U;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1472,13 +1501,11 @@ static void menu_draw_curve(void)
   }
 }
 
-static void menu_draw_edit(void)
+/* EDIT 视图中间那个数值框：面板底色 + 边框 + 数值本身。按加减号调数值时只重画
+ * 这一块，页眉、MIN/MAX/STEP 说明和页脚都只跟当前项有关，一个字都不变。 */
+static void menu_draw_edit_value(void)
 {
   char value[32];
-  char range[64];
-  char min_text[12];
-  char max_text[12];
-  char step_text[12];
   uint16_t width;
   uint16_t x;
   uint16_t scale = 3U;
@@ -1505,6 +1532,21 @@ static void menu_draw_edit(void)
 
   x = (uint16_t)((DISPLAY_WIDTH - width) / 2U);
   display_draw_string(x, 23U, value, UI_VALUE, UI_PANEL, scale);
+}
+
+static void menu_draw_edit(void)
+{
+  char range[64];
+  char min_text[12];
+  char max_text[12];
+  char step_text[12];
+
+  if(menu_edit_item == NULL)
+  {
+    return;
+  }
+
+  menu_draw_edit_value();
 
   menu_format_float(min_text, sizeof(min_text), menu_edit_item->min_value, 2U, "");
   menu_format_float(max_text, sizeof(max_text), menu_edit_item->max_value, 2U, "");
@@ -1591,7 +1633,20 @@ static void menu_draw(void)
   if(menu_nav.view == (uint8_t)MENU_VIEW_ABOUT)
   {
     menu_partial_row = 0U;
+    menu_edit_partial = 0U;
     menu_draw_about();
+    menu_need_draw = 0U;
+    return;
+  }
+
+  /* EDIT 视图（FLOAT 项，比如 MAX POWER / LOW VOLT）按加减号调数值：只重画中间
+   * 那个数值框。页眉、MIN/MAX/STEP 说明和页脚都只跟"当前是哪一项"有关，按一下
+   * 加减号它们一个字都不变，跟着整屏刷黑重画就是白闪一次。 */
+  if((menu_edit_partial != 0U) &&
+     (menu_nav.view == (uint8_t)MENU_VIEW_EDIT))
+  {
+    menu_edit_partial = 0U;
+    menu_draw_edit_value();
     menu_need_draw = 0U;
     return;
   }
@@ -1625,6 +1680,7 @@ static void menu_draw(void)
   }
 
   menu_partial_row = 0U;
+  menu_edit_partial = 0U;
   display_clear(UI_BLACK);
 
   if(menu_nav.view == (uint8_t)MENU_VIEW_EDIT)
