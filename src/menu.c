@@ -125,6 +125,20 @@ static void menu_dbg_pdvolt(const char *who)
 }
 #endif
 
+/* PD VOLT 的"合法值"影子。
+ *
+ * 实测串口记录：点 MENU 写入的地址就是 g_eeprom_params.ch224a_index 本体（打出来的
+ * 两个地址相同），eeprom_save() 也存对了（重启读回来 opt=1，还成功谈到 15V 档），
+ * 但在"点完 15V -> 退出菜单 -> 再进菜单"这段时间里，RAM 里那个字节自己变回了 0。
+ * 全工程 grep 没有任何一条语句写这个字段，所以是越界野写：字段在结构体偏移 328，
+ * 紧跟在 voltage_recovery_ms 后面，怀疑是相邻那组 float 被越界访问踩到的。
+ *
+ * 元凶还没抓到，先把这个字段守住 —— 菜单是唯一合法的写入方：菜单写过的值在这里留个
+ * 影子，每次打开菜单发现对不上就恢复回来，并在串口打一条 clobbered 记录，既不让界面
+ * 显示错的档位，也把被踩这件事留在日志里好继续追。 */
+static uint8_t menu_pdvolt_shadow;
+static uint8_t menu_pdvolt_shadow_valid;
+
 #define MENU_LONG_MS                    (2000U)
 #define MENU_ROWS                       (5U)
 #define MENU_ROW_Y                      (14U)
@@ -519,6 +533,23 @@ void menu_open(void)
   /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
   menu_dbg_pdvolt("open");
 #endif
+  /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
+  if(menu_pdvolt_shadow_valid == 0U)
+  {
+    menu_pdvolt_shadow = menu_config.ch224a_index;
+    menu_pdvolt_shadow_valid = 1U;
+  }
+  else if(menu_config.ch224a_index != menu_pdvolt_shadow)
+  {
+#if MENU_DEBUG
+    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
+    menu_dbg_dec(menu_config.ch224a_index);
+    menu_dbg_str(" -> restore ");
+    menu_dbg_dec(menu_pdvolt_shadow);
+    menu_dbg_str("\r\n");
+#endif
+    menu_config.ch224a_index = menu_pdvolt_shadow;
+  }
 
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
   menu_nav.page = &menu_page_root;
@@ -547,6 +578,23 @@ void menu_open_service_setup(void)
   /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
   menu_dbg_pdvolt("open");
 #endif
+  /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
+  if(menu_pdvolt_shadow_valid == 0U)
+  {
+    menu_pdvolt_shadow = menu_config.ch224a_index;
+    menu_pdvolt_shadow_valid = 1U;
+  }
+  else if(menu_config.ch224a_index != menu_pdvolt_shadow)
+  {
+#if MENU_DEBUG
+    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
+    menu_dbg_dec(menu_config.ch224a_index);
+    menu_dbg_str(" -> restore ");
+    menu_dbg_dec(menu_pdvolt_shadow);
+    menu_dbg_str("\r\n");
+#endif
+    menu_config.ch224a_index = menu_pdvolt_shadow;
+  }
 
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
   menu_nav.page = &menu_page_power_service;
@@ -969,6 +1017,12 @@ static void menu_enter_item(void)
           value = 0U;
         }
         *(uint8_t *)item->value = value;
+        /* 菜单自己写下的 PD VOLT 值留个影子，用来识别"别人踩的" */
+        if((const void *)item->value == (const void *)&menu_config.ch224a_index)
+        {
+          menu_pdvolt_shadow = value;
+          menu_pdvolt_shadow_valid = 1U;
+        }
 #if MENU_DEBUG
         /* 写入的值 + 这一项真正指向的地址 */
         menu_dbg_str("\r\n[mn] enum ");
