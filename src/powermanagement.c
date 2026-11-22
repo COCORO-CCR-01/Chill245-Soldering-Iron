@@ -986,15 +986,22 @@ static uint8_t power_pd_option_sanitize(uint8_t option)
 
 
 /* 选项号 -> CH224A 0x0A 的电压索引。AUTO 没有固定索引，返回 POWER_PD_INDEX_NONE，
- * 由 power_pd_auto_resolve() 去问适配器。 */
+ * 由 power_pd_auto_resolve() 去问适配器。只放开 15V / 20V：低压档 PMOS 导通电阻
+ * 损耗大、发热大，整机不在 15V 以下工作。 */
 static uint8_t power_pd_option_to_index(uint8_t option)
 {
-  if(option == POWER_PD_OPTION_AUTO)
+  static const uint8_t map[POWER_PD_OPTION_COUNT] = {
+    POWER_PD_INDEX_NONE,      /* 0    AUTO */
+    POWER_CH224A_INDEX_15V,   /* 1    15V  */
+    POWER_CH224A_INDEX_20V    /* 2    20V  */
+  };
+
+  if(option >= POWER_PD_OPTION_COUNT)
   {
     return POWER_PD_INDEX_NONE;
   }
 
-  return (uint8_t)(option - 1U);
+  return map[option];
 }
 
 
@@ -1036,6 +1043,13 @@ static void power_pd_auto_resolve(uint32_t now_ms)
     return;
   }
 
+  if(idx < POWER_PD_INDEX_MIN)
+  {
+    /* 这颗供电连 15V 都没有（只有 5V / 9V 的头）：整机不在 15V 以下工作，就按
+     * 最低允许档去要，要不到是它的问题，不去偷偷放松欠压门限。 */
+    idx = POWER_PD_INDEX_MIN;
+  }
+
   if(idx > power_pd_auto_cap)
   {
     idx = power_pd_auto_cap;
@@ -1049,9 +1063,10 @@ static void power_pd_auto_resolve(uint32_t now_ms)
 }
 
 
-/* AUTO 退一档：这一档谈不下来，或者把供电方拉得掉压重启了，就往下退一档重来，
- * 最低退到 5V。退完还是不行的话，5V 档 watchdog 本来就不纠偏，不会再占总线。 */
-static void power_pd_auto_step_down(uint32_t now_ms, const char *why)
+/* AUTO 退一档：这一档谈不下来，或者把供电方拉得掉压重启了，就往下退一档重来。
+ * 只退到 POWER_PD_INDEX_MIN（15V）为止 —— 再低 PMOS 发热大，整机不打算在那个电压
+ * 下工作。返回 0 表示已经退无可退，调用方该去走放弃/退避，不要几秒就重谈一次。 */
+static uint8_t power_pd_auto_step_down(uint32_t now_ms, const char *why)
 {
   (void)why;
 
@@ -1060,31 +1075,52 @@ static void power_pd_auto_step_down(uint32_t now_ms, const char *why)
     power_pd_auto_index = power_pd_auto_cap;
   }
 
-  if(power_pd_auto_index > POWER_CH224A_INDEX_5V)
+  if(power_pd_auto_index <= POWER_PD_INDEX_MIN)
   {
-    power_pd_auto_index--;
-    power_pd_auto_cap = power_pd_auto_index;
-
-    POWER_DBG("\r\n[pd] auto down(");
-    POWER_DBG(why);
-    POWER_DBG(") -> idx=");
-    POWER_DBG_DEC(power_pd_auto_index);
-    POWER_DBG("\r\n");
+    return 0U;
   }
+
+  power_pd_auto_index--;
+  power_pd_auto_cap = power_pd_auto_index;
+
+  POWER_DBG("\r\n[pd] auto down(");
+  POWER_DBG(why);
+  POWER_DBG(") -> idx=");
+  POWER_DBG_DEC(power_pd_auto_index);
+  POWER_DBG("\r\n");
 
   power_ch224a_target_index = power_pd_auto_index;
   power_pd_action = POWER_PD_MONITOR;
   power_pd_bad_since_ms = 0U;
   power_pd_attempts = 0U;
   power_pd_step_ms = now_ms;
+
+  return 1U;
+}
+
+
+/* 本轮放弃：退到后台，隔 POWER_PD_BACKOFF_MS 再看一眼。手动档要不到目标档，
+ * 或者 AUTO 已经退到最低允许档还是要不到，都走这里。 */
+static void power_pd_give_up(uint32_t now_ms, uint8_t index)
+{
+  power_pd_step_ms = now_ms;
+  power_pd_action = POWER_PD_GIVE_UP;
+
+  POWER_DBG("\r\n[pd] wd GIVEUP idx=");
+  POWER_DBG_DEC(index);
+  POWER_DBG(" st=0x");
+  POWER_DBG_HEX(power_ch224a_status);
+  POWER_DBG(" mv=");
+  POWER_DBG_DEC(power_voltage_mv);
+  POWER_DBG("\r\n");
 }
 
 
 /* 跟踪菜单里选的 PD 档位。这里只改目标档位，不在主循环里做阻塞协商：
  * 把 watchdog 清回 MONITOR，它下个周期发现实测 VBUS 和新目标不一致，就自己走
  * commit -> 重写目标档 -> 校验，换档过程显示和加热都不会卡住。
- * 选 5V 时芯片在 CFG1=205k 单电阻模式下谈不到 5V，会保持默认档，watchdog
- * 对 5V 也不纠偏，所以不会出现反复重试。 */
+ * PD VOLT 只放开 AUTO / 15V / 20V（电压越低 PMOS 导通损耗和发热越大），所以这里
+ * 不会再碰到 5V / 9V 那种"芯片谈不到、只能保持默认档"的档位。 */
 static void power_pd_slot_task(uint32_t now_ms)
 {
   uint8_t option;
@@ -1177,12 +1213,10 @@ static void power_pd_watchdog(uint32_t now_ms)
       /* VBUS 掉到 5V 以下，而芯片还在应答 I2C（线还插着，不是被拔掉了）：这是供电方
        * 被我们拽重启了。不排队等 1.5 s 容错计时，AUTO 马上退一档重来。
        * 只在 MONITOR 里判：换档过程中本来就会抖，那会儿在 COMMIT / REQUEST 状态。 */
-      if((index != POWER_CH224A_INDEX_5V) && (power_voltage_mv != 0U)
-         && (power_voltage_mv < POWER_PD_COLLAPSE_MV)
-         && (power_pd_option_sanitize(g_eeprom_params.ch224a_index) == POWER_PD_OPTION_AUTO))
+      if((power_voltage_mv != 0U) && (power_voltage_mv < POWER_PD_COLLAPSE_MV)
+         && (power_pd_option_sanitize(g_eeprom_params.ch224a_index) == POWER_PD_OPTION_AUTO)
+         && (power_pd_auto_step_down(now_ms, "supply reset") != 0U))
       {
-        power_pd_auto_step_down(now_ms, "supply reset");
-
         break;
       }
 
@@ -1266,23 +1300,12 @@ static void power_pd_watchdog(uint32_t now_ms)
 
           if(power_pd_attempts >= POWER_PD_MAX_ATTEMPTS)
           {
-            if(power_pd_option_sanitize(g_eeprom_params.ch224a_index) == POWER_PD_OPTION_AUTO)
+            /* 手动档要不到这一档，或者 AUTO 已经退到最低允许档还是要不到：退到后台，
+             * 隔一段时间再试。AUTO 还能退档的话就退一档重来，不趴退避。 */
+            if((power_pd_option_sanitize(g_eeprom_params.ch224a_index) != POWER_PD_OPTION_AUTO)
+               || (power_pd_auto_step_down(now_ms, "no slot") == 0U))
             {
-              /* AUTO：这颗供电给不出这一档，直接往下退一档，不用趴 15 s 退避 */
-              power_pd_auto_step_down(now_ms, "no slot");
-            }
-            else
-            {
-              /* 手动档：这个供电方大概率没有这一档，退到后台，隔一段时间再试 */
-              power_pd_step_ms = now_ms;
-              power_pd_action = POWER_PD_GIVE_UP;
-              POWER_DBG("\r\n[pd] wd GIVEUP idx=");
-              POWER_DBG_DEC(index);
-              POWER_DBG(" st=0x");
-              POWER_DBG_HEX(power_ch224a_status);
-              POWER_DBG(" mv=");
-              POWER_DBG_DEC(power_voltage_mv);
-              POWER_DBG("\r\n");
+              power_pd_give_up(now_ms, index);
             }
           }
           else if(power_ch224a_write_reg(power_ch224a_address,
@@ -1666,35 +1689,6 @@ static void power_latch_fault(power_fault_t fault, uint16_t voltage_mv)
   }
 }
 
-/* 欠压门限不能高过“当前档位的标称电压 - 余量”。
- * 用户或者 AUTO 选了 9V / 5V 这种低档时，实测 VBUS 本来就在 13.5V 以下，照按 20V
- * 定的阈值判会直接锁死在欠压故障里，连 clear 都清不掉。所以取两者里更低的：
- * 20V 档（20000-1500 = 18500）时仍然照用户设的 13.5V 判，一点没放松。 */
-#define POWER_LOW_VOLTAGE_SLOT_MARGIN_MV        (1500U)
-
-static uint16_t power_effective_low_voltage_mv(void)
-{
-  uint16_t slot_mv;
-  uint16_t margin_mv;
-
-  if(power_ch224a_target_index > 5U)
-  {
-    return power_low_voltage_mv;
-  }
-
-  slot_mv = (uint16_t)power_ch224a_voltage_mv_table[power_ch224a_target_index];
-
-  if(slot_mv <= POWER_LOW_VOLTAGE_SLOT_MARGIN_MV)
-  {
-    return slot_mv;
-  }
-
-  margin_mv = (uint16_t)(slot_mv - POWER_LOW_VOLTAGE_SLOT_MARGIN_MV);
-
-  return (margin_mv < power_low_voltage_mv) ? margin_mv : power_low_voltage_mv;
-}
-
-
 uint8_t power_clear_fault(void)
 {
   uint8_t restore_heater;
@@ -1705,7 +1699,7 @@ uint8_t power_clear_fault(void)
   }
 
   if((power_voltage_mv <=
-      (uint16_t)(power_effective_low_voltage_mv() + power_voltage_hysteresis_mv)) ||
+      (uint16_t)(power_low_voltage_mv + power_voltage_hysteresis_mv)) ||
      (power_voltage_mv >=
       (uint16_t)(power_high_voltage_mv - power_voltage_hysteresis_mv)))
   {
@@ -1734,7 +1728,6 @@ uint8_t power_clear_fault(void)
 static void power_voltage_task(uint32_t now_ms)
 {
   sm_status_t status;
-  uint16_t low_mv;
 
   if((uint32_t)(now_ms - power_last_voltage_sample_ms) <
      POWER_VOLTAGE_SAMPLE_MS)
@@ -1765,11 +1758,9 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
-  low_mv = power_effective_low_voltage_mv();
-
   if(power_fault == POWER_FAULT_NONE)
   {
-    if((power_voltage_mv < low_mv) ||
+    if((power_voltage_mv < power_low_voltage_mv) ||
        (power_voltage_mv > power_high_voltage_mv))
     {
       if(power_voltage_bad_since_ms == 0U)
@@ -1779,7 +1770,7 @@ static void power_voltage_task(uint32_t now_ms)
       else if((uint32_t)(now_ms - power_voltage_bad_since_ms) >=
               power_voltage_trip_ms)
       {
-        if(power_voltage_mv < low_mv)
+        if(power_voltage_mv < power_low_voltage_mv)
         {
           power_latch_fault(POWER_FAULT_UNDERVOLTAGE, power_voltage_mv);
         }
@@ -1797,7 +1788,7 @@ static void power_voltage_task(uint32_t now_ms)
   else
   {
     if((power_voltage_mv >
-        (uint16_t)(low_mv + power_voltage_hysteresis_mv)) &&
+        (uint16_t)(power_low_voltage_mv + power_voltage_hysteresis_mv)) &&
        (power_voltage_mv <
         (uint16_t)(power_high_voltage_mv - power_voltage_hysteresis_mv)))
     {

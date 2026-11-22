@@ -59,12 +59,16 @@ extern "C" {
 #define POWER_CH224A_INDEX_20V                  (4U)
 #define POWER_CH224A_INDEX_28V                  (5U)
 
-/* 菜单 PD VOLT 存的是"选项号"，不是寄存器索引：0 = AUTO（开机自动谈这颗供电方能
- * 给的最高档），1..5 = 5/9/12/15/20V，寄存器索引 = 选项号 - 1。
- * 28V 不给选：整机没按 28V 设计。 */
+/* 菜单 PD VOLT 存的是"选项号"，不是寄存器索引：0 = AUTO（开机自动谈这颗供电能给
+ * 的最高档），1 = 15V，2 = 20V。
+ * 只放开这三档：电压越低，同样的功率下 PMOS 导通电阻上的损耗和发热越大，整机不在
+ * 15V 以下工作，所以菜单不给选，AUTO 的自动降档也只降到 15V 为止。28V 同样不给选
+ * （整机没按 28V 设计）。 */
 #define POWER_PD_OPTION_AUTO                    (0U)
-#define POWER_PD_OPTION_COUNT                   (6U)
+#define POWER_PD_OPTION_COUNT                   (3U)
 #define POWER_PD_INDEX_NONE                     (0xFFU)
+#define POWER_PD_INDEX_MIN                      POWER_CH224A_INDEX_15V
+#define POWER_PD_INDEX_MAX                      POWER_CH224A_INDEX_20V
 /* 上电第一次写 0x0A 会被 CH224A 吞掉，用这一档把合同 commit 掉。
  * 选 9V 是因为 CFG1=205k 单电阻模式的默认档就是 9V，来回切换最安全。 */
 #define POWER_CH224A_INDEX_COMMIT               POWER_CH224A_INDEX_9V

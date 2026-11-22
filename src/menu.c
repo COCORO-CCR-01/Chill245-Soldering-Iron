@@ -138,16 +138,17 @@ static const char *const menu_pid_mode_options[] =
   "STD", "BOOST", "CUSTOM"
 };
 
-/* PD VOLT：菜单存的是"选项号"，0 = AUTO，1..5 = 5/9/12/15/20V，
- * CH224A 寄存器 0x0A 的索引 = 选项号 - 1（映射在 powermanagement.c）。
- * AUTO 由 power_pd_slot_task() 去读这颗供电方的 Source_Capabilities，挑它能给的
- * 最高 Fixed 档；这一档谈不下来、或者把它拉得掉压重启，就自动往下退一档重试。
- * 28V 档（索引 5）故意不给选，整机按 20V 设计，别在这儿把 28V 放出来。
+/* PD VOLT：菜单存的是"选项号"，0 = AUTO，1 = 15V，2 = 20V，换算表在
+ * power_pd_option_to_index()。只放这三档：电压越低，同样功率下 PMOS 导通电阻上的
+ * 损耗和发热越大，整机不在 15V 以下工作，所以 12V / 9V / 5V 不提供选择，AUTO 的
+ * 自动降档也只降到 15V。28V 同样不给选（整机没按 20V 以上设计）。
+ * AUTO 由 power_pd_slot_task() 读这颗供电方的 Source_Capabilities 挑最高档；
+ * 谈不下来、或者把它拉得掉压重启，就自动往下退一档，止步 15V。
  * 选完不需要确认也不需要重启：主循环里看到目标档变了，就交给
  * power_pd_watchdog() 非阻塞地 commit -> 重写 -> 校验。 */
 static const char *const menu_pd_volt_options[] =
 {
-  "AUTO", "5V", "9V", "12V", "15V", "20V"
+  "AUTO", "15V", "20V"
 };
 
 
@@ -196,7 +197,7 @@ static const menu_item_t menu_sleep_items[] =
   { "MAX POWER",    MENU_ITEM_FLOAT, &menu_config.max_power_pct,      NULL, NULL, 0, 5.0f,  10.0f, 100.0f, 0U, "%", NULL },
   /* 这里原来是 LOW VOLT：输入电压现在是 PD 谈出来的，用户在这页能动的只有
    * "要哪一档"；欠压阈值挪到 POWER SETUP 服务页里去改。 */
-  { "PD VOLT",      MENU_ITEM_ENUM,  &menu_config.ch224a_index,      NULL, menu_pd_volt_options, 6U, 1.0f, 0.0f, 5.0f, 0U, "", NULL },
+  { "PD VOLT",      MENU_ITEM_ENUM,  &menu_config.ch224a_index,      NULL, menu_pd_volt_options, 3U, 1.0f, 0.0f, 2.0f, 0U, "", NULL },
   { "HIGH VOLT",    MENU_ITEM_FLOAT, &menu_config.high_voltage_v,    NULL, NULL, 0, 0.5f,   20.0f,  40.0f,   1U, "V",  NULL },
   { "VOLT HYST",    MENU_ITEM_FLOAT, &menu_config.voltage_hysteresis_v, NULL, NULL, 0, 0.1f, 0.0f,   3.0f,    1U, "V",  NULL },
   { "TRIP TIME",    MENU_ITEM_FLOAT, &menu_config.voltage_trip_ms,   NULL, NULL, 0, 10.0f,  10.0f,  5000.0f, 0U, "ms", NULL },
