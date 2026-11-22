@@ -23,6 +23,7 @@ typedef enum
 static bootguard_state_t bootguard_state;
 static uint8_t bootguard_last_any;
 static uint8_t bootguard_last_next;
+static uint8_t bootguard_last_prev;
 static uint32_t bootguard_last_draw;
 static int bootguard_last_temp;
 
@@ -78,7 +79,7 @@ static void bootguard_draw(const sm_status_t *status)
   {
     bootguard_center(6U, "BOOT HOLD", BOOTGUARD_RED, 2U);
     bootguard_center(24U, "HEAT OFF", BOOTGUARD_WHITE, 2U);
-    bootguard_center(44U, "NEXT", BOOTGUARD_YELLOW, 2U);
+    bootguard_center(44U, "PREV/NEXT", BOOTGUARD_YELLOW, 2U);
     bootguard_center(62U, "START", BOOTGUARD_WHITE, 1U);
     bootguard_center(72U, "HOLD MENU SETUP", BOOTGUARD_YELLOW, 1U);
   }
@@ -95,6 +96,7 @@ void bootguard_init(void)
   bootguard_state = BOOTGUARD_WAIT;
   bootguard_last_any = bootguard_any_pressed();
   bootguard_last_next = buttons_is_pressed(BUTTON_NEXT);
+  bootguard_last_prev = buttons_is_pressed(BUTTON_PREV);
   bootguard_last_draw = 0U;
   bootguard_last_temp = -1000;
 }
@@ -121,8 +123,10 @@ void bootguard_task(uint32_t now_ms)
   sm_status_t status;
   uint8_t any;
   uint8_t next;
+  uint8_t prev;
   uint8_t any_edge;
   uint8_t next_edge;
+  uint8_t prev_edge;
 
   if(bootguard_state == BOOTGUARD_DONE)
   {
@@ -139,10 +143,13 @@ void bootguard_task(uint32_t now_ms)
   sm_get_status(&status);
   any = bootguard_any_pressed();
   next = buttons_is_pressed(BUTTON_NEXT);
+  prev = buttons_is_pressed(BUTTON_PREV);
   any_edge = ((any != 0U) && (bootguard_last_any == 0U)) ? 1U : 0U;
   next_edge = ((next != 0U) && (bootguard_last_next == 0U)) ? 1U : 0U;
+  prev_edge = ((prev != 0U) && (bootguard_last_prev == 0U)) ? 1U : 0U;
   bootguard_last_any = any;
   bootguard_last_next = next;
+  bootguard_last_prev = prev;
 
   switch(bootguard_state)
   {
@@ -187,7 +194,9 @@ void bootguard_task(uint32_t now_ms)
         return;
       }
 
-      if(next_edge != 0U)
+      /* PREV / NEXT 任意一个都能启动加热：单手操作时不必专门去找 NEXT。
+       * 提示语已经跟着改成 "PREV/NEXT"。 */
+      if((next_edge != 0U) || (prev_edge != 0U))
       {
         (void)sm_set_heater_enabled(1U);
         bootguard_state = BOOTGUARD_DONE;
