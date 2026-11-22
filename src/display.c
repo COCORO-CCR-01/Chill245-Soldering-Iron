@@ -36,7 +36,12 @@
 #define DISPLAY_SPI                     SPI1
 #define DISPLAY_SPI_CLOCK               CRM_SPI1_PERIPH_CLOCK
 /* 硬件 SPI：937.5 kHz，使用合法的 DIV_128 编码 */
-#define DISPLAY_SPI_DIV                 SPI_MCLK_DIV_16
+/* SPI 时钟分频：原来是 DIV_16（APB2 72MHz 下约 4.5MHz），送一整屏要 45ms 以上，
+ * "擦一块再画回来"的过程长到人眼能看见，就是用户说的闪烁。ST7735S 的写周期最低
+ * 15ns（约 33MHz），9MHz 离上限还很远，是安全档；先提到 DIV_8 把每次重绘的时间砍
+ * 一半，屏幕刷新和翻页都明显利索。接线太长或出现错色/花点的话退回 DIV_16，
+ * 想再快可以试 DIV_4（约 18MHz），那档就要看具体排线和焊点了。 */
+#define DISPLAY_SPI_DIV                 SPI_MCLK_DIV_8
 
 /*
  * 参考 ST7735S-master 的硬件 SPI 写法：命令/数据之间释放 CS。
