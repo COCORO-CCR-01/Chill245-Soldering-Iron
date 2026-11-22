@@ -1310,25 +1310,28 @@ static void menu_draw_list(void)
 
     ui_icon_draw(menu_item_icon(item), 4U, (uint16_t)(y + 1U),
                  (index == menu_nav.selected) ? UI_WHITE : UI_GRAY);
-    /* 菜单列表用 1.5 倍字（display_draw_string_32）：这套 3x5 点阵整数倍只有
-     * 1 倍和 2 倍两档，1 倍看不清，2 倍一行放不下"标签 + 数值"、一屏 5 行会掉成
-     * 3 行。1.5 倍字形占 5x8、前进 6 像素，行高 11 装得下，放大的同时行数不变。
-     * 字高 8 在 11 的行里从 y+1 起画正好居中（原来是 y+3）。 */
-    display_draw_string_32(14U, (uint16_t)(y + 1U), item->label,
-                           (index == menu_nav.selected) ? UI_WHITE : UI_GRAY,
-                           background);
+    /* 菜单列表用 2 倍整数放大。这套点阵是 3 列 x 5 行，只有整数倍才是点对点的干净
+     * 字：试过 1.5 倍（3 列凑 5 列、5 行凑 8 行），凑出来列宽 2/1/2 不均匀，字发糊
+     * 发歪反而看不清，所以回到整数 2 倍 —— 字形 6x10、前进 8。
+     * 行高 11、行底色只画到 10，所以字顶对齐画在 y（原来是 1 倍的 y+3）。
+     * 宽度逐条点算过：最长的带值标签 "HIGH TEMP C" 11 字符到 14+88=102，最长的值
+     * "2000C/S" 7 字符从 96 起画，最窄的一行也还剩几像素，不会撞上。 */
+    display_draw_string(14U, y, item->label,
+                        (index == menu_nav.selected) ? UI_WHITE : UI_GRAY,
+                        background, 2U);
 
     menu_format_item_value(item, value, sizeof(value));
 
     if(value[0] != '\0')
     {
-      /* 数值也用 1.5 倍，宽度要拿配套的 display_string_width_32() 算，
-       * 否则右对齐会偏（右边界沿用原来的 156 / 带箭头 144） */
-      uint16_t width = display_string_width_32(value);
+      /* 数值同样 2 倍整数放大，宽度用 display_string_width(value, 2U) 算，
+       * 右对齐才不会偏；右边界沿用 156（带箭头那行 144），2 倍下墨迹末端落在 154，
+       * 离屏幕右边还有 6 像素，不会裁字 */
+      uint16_t width = display_string_width(value, 2U);
       uint16_t x = (uint16_t)((has_arrow != 0U) ? (144U - width) :
                                                     (156U - width));
 
-      display_draw_string_32(x, (uint16_t)(y + 1U), value, color, background);
+      display_draw_string(x, y, value, color, background, 2U);
     }
 
     if(has_arrow != 0U)
