@@ -389,6 +389,12 @@ void hms_show_eeprom_recovered(void)
   hms_drawn = 0U;
 }
 
+/* 重试之后在故障界面多赖一会儿的时间。sm_clear_fault() 的那一瞬间故障显示是清掉的，
+ * 立刻让出屏幕就会露出主界面，紧接着故障重新成立、HMS 又整屏画回来。 */
+#define HMS_RETRY_HOLD_MS   1500U
+
+static uint32_t hms_retry_hold_until_ms;
+
 uint8_t hms_task(uint32_t now_ms)
 {
   sm_status_t status;
@@ -480,15 +486,36 @@ uint8_t hms_task(uint32_t now_ms)
       (void)sm_clear_fault();
       (void)power_clear_fault();
       (void)sm_set_heater_enabled(1U);
-      hms_view = HMS_VIEW_NONE;
-      hms_drawn = 0U;
+
+      /* 重试不把屏幕交还出去。原来是 hms_view = NONE + return 0，主循环下一拍就走
+       * else 分支把主界面画了出来；而故障（烙铁还拔着）几百毫秒内重新成立，HMS 再
+       * 整屏画回来 —— 用户看到的就是"按一下闪一下主界面再闪回来"。
+       * 现在留在故障界面，并给自己 HMS_RETRY_HOLD_MS 的观察期：观察期内故障回来了
+       * 就什么变化都没有（一个像素不重画），真的清掉了才让出屏幕，只回主界面一次，
+       * 不会再闪回来。 */
+      hms_retry_hold_until_ms = now_ms + HMS_RETRY_HOLD_MS;
       hms_pair_last = 0U;
-      return 0U;
+      return 1U;
     }
 
     hms_pair_last = pair_pressed;
 
     hms_menu_last = menu_pressed;
+    return 1U;
+  }
+
+  /* 重试后的观察期：故障此刻显示是清掉的，但这时候让出屏幕就会把主界面画出来，
+   * 紧接着故障又成立、HMS 又整屏画回来，看着就是来回闪。观察期内赖在故障界面
+   * （数值照常每秒刷一次，不画成死屏），到点再按真实状态决定去留。 */
+  if((hms_view == HMS_VIEW_FAULT) &&
+     ((int32_t)(now_ms - hms_retry_hold_until_ms) < 0))
+  {
+    if((uint32_t)(now_ms - hms_info_ms) >= 1000U)
+    {
+      hms_info_ms = (now_ms == 0U) ? 1U : now_ms;
+      hms_draw_fault_values();
+    }
+
     return 1U;
   }
 
