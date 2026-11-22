@@ -668,13 +668,35 @@ static void maindash_classic_right_signature(const sm_status_t *status, uint8_t 
   }
 }
 
+/* 屏上此刻画的是哪一页（0xFF = 还没画过，第一次按换页处理） */
+static uint8_t cl_right_shown_pair = 0xFFU;
+
 static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_ms)
 {
   uint8_t pair;
+  uint8_t value_only;
   char value[20];
 
-  wallpaper_blit(76U, 14U, 84U, 49U);
   pair = (uint8_t)((now_ms / 2000U) & 1U);
+
+  /* 按元素擦，不再一次重铺整块 84x49（8232 字节）—— 那是右侧闪的主因：重铺期间
+   * 屏幕上是"先空一下再画回来"。
+   *
+   * 页码没变（只是数值跳了一格）：屏上标签和分割线都还是对的，只擦两个数值槽
+   * （104..160，各 56x16），约 3.6KB；
+   * 页码变了：两个标签槽（78..102，各 24x6）也得换，加上分割线，约 4.3KB。
+   * 槽位边界按字形算过：标签 1 倍字高 5、最宽 4 字符 16 像素，画在 x=78；数值
+   * 3 倍字高 15、最宽 5 字符 50 像素，画在 x=104，槽位留到屏边 160。 */
+  value_only = (pair == cl_right_shown_pair) ? 1U : 0U;
+
+  if(value_only == 0U)
+  {
+    maindash_patch_bg(78U, 20U, 24U, 6U);
+    maindash_patch_bg(78U, 43U, 24U, 6U);
+  }
+
+  maindash_patch_bg(104U, 15U, 56U, 16U);
+  maindash_patch_bg(104U, 38U, 56U, 16U);
 
   if(pair == 0U)
   {
@@ -704,6 +726,9 @@ static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_
     fmt_snprintf(value, sizeof(value), "%d.%dC", whole, frac);
     display_draw_string_transparent(104U, 38U, value, UI_WHITE, 3U);
   }
+
+  /* 记账：屏上此刻是这一页 */
+  cl_right_shown_pair = pair;
 }
 
 /* 只把"要重写的那一小块"背景铺好：有壁纸回填壁纸，没壁纸刷黑。
