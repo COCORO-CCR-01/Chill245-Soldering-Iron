@@ -160,6 +160,13 @@ static void main_buttons(button_id_t button, button_event_t event)
     return;
   }
 
+  /* 这里没有挡 HMS 故障界面，是刻意保留的（用户确认）：故障界面上 hms_task 轮询
+   * PREV/NEXT 的抬起做重试，同一个按键的 CLICK 回调到这里还会把设定温度调一格
+   * （界面上的 SET 每秒刷新会跟着变，按键音也响）—— 故障界面也能顺手改温度。
+   * 以前这种按键会伴随"闪一下主界面再闪回故障界面"，那是重试分支把屏幕交还出去
+   * 造成的，已经在 hms.c 里修掉（重试留在故障界面 + 1.5s 观察期），和这里的调温
+   * 互不干扰。看到这段别当 bug 修。 */
+
   /* 手动 DISABLED 时，任意按键短按一次先恢复加热；本次不再执行翻页/调温 */
   if((event == BUTTON_EVENT_CLICK) && (main_heater_manually_disabled() != 0U))
   {
