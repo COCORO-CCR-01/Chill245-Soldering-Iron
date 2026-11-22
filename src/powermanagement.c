@@ -783,34 +783,18 @@ static uint8_t power_ch224a_read_caps(uint8_t *data, uint8_t *out_ndo, uint8_t *
 {
   uint8_t again;
   uint8_t bad;
+  uint8_t len;
+  uint8_t ndo;
   uint8_t i;
   uint16_t head;
 
-  bad = 0U;
-
-  for(i = 0U; i < POWER_CH224A_CAP_COUNT; i++)
+  /* 先只读消息头拿 PDO 个数。CH224A 不支持连续读，48 个寄存器读两遍是 96 次单字节
+   * 事务，实测会把 I2C1 逼进锁死（读完之后芯片就再也不 ACK，只能靠总线恢复起来）；
+   * 头 + PDO 最多 30 字节，读两遍 62 次，够用又不折腾总线。 */
+  if((power_ch224a_read_reg(POWER_CH224A_REG_CAP_BASE, &data[0]) == 0U)
+     || (power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + 1U), &data[1]) == 0U))
   {
-    if(power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &data[i]) == 0U)
-    {
-      return 0U;
-    }
-  }
-
-  for(i = 0U; i < POWER_CH224A_CAP_COUNT; i++)
-  {
-    again = 0U;
-
-    if((power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &again) == 0U)
-       || (again != data[i]))
-    {
-      data[i] = 0U;
-      bad++;
-    }
-  }
-
-  if(bad_out != NULL)
-  {
-    *bad_out = bad;
+    return 0U;
   }
 
   head = (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
@@ -822,9 +806,56 @@ static uint8_t power_ch224a_read_caps(uint8_t *data, uint8_t *out_ndo, uint8_t *
     return 0U;
   }
 
-  *out_ndo = (uint8_t)((head >> 12) & 0x07U);
+  ndo = (uint8_t)((head >> 12) & 0x07U);
 
-  return (*out_ndo != 0U) ? 1U : 0U;
+  if(ndo == 0U)
+  {
+    return 0U;
+  }
+
+  len = (uint8_t)(2U + (ndo * 4U));
+
+  if(len > POWER_CH224A_CAP_COUNT)
+  {
+    len = POWER_CH224A_CAP_COUNT;
+  }
+
+  for(i = 2U; i < len; i++)
+  {
+    if(power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &data[i]) == 0U)
+    {
+      return 0U;
+    }
+  }
+
+  /* 整段再读一遍对结果，两遍一致的字节才可信，不一致的抹零并计数。中途读失败就别
+   * 继续硬撑了 —— 继续读只会把已经发飘的总线按死，整块当读失败，让调用方重来。 */
+  bad = 0U;
+
+  for(i = 0U; i < len; i++)
+  {
+    again = 0U;
+
+    if(power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &again) == 0U)
+    {
+      return 0U;
+    }
+
+    if(again != data[i])
+    {
+      data[i] = 0U;
+      bad++;
+    }
+  }
+
+  if(bad_out != NULL)
+  {
+    *bad_out = bad;
+  }
+
+  *out_ndo = ndo;
+
+  return 1U;
 }
 
 
@@ -882,6 +913,11 @@ static uint8_t power_ch224a_max_index_from_caps(void)
 
 
 #if POWER_CH224A_DEBUG
+/* 一次 attach 只 dump 一次：能力表在没拔插之前不会变，反复 dump 只是反复 hammer
+ * 总线（实测读得越多越容易把 I2C1 读锁死）。重新发现芯片时再放开一次。 */
+static uint8_t power_pd_caps_dumped;
+#define power_pd_caps_dumped_reset()    (power_pd_caps_dumped = 0U)
+
 static void power_pd_dbg_hex32(uint32_t value)
 {
   POWER_DBG_HEX((uint8_t)(value >> 24));
@@ -898,6 +934,13 @@ static void power_pd_dump_caps(void)
   uint8_t i;
   uint16_t head;
   uint8_t ndo;
+
+  if(power_pd_caps_dumped != 0U)
+  {
+    return;
+  }
+
+  power_pd_caps_dumped = 1U;
 
   if(power_ch224a_read_caps(data, &ndo, &bad) == 0U)
   {
@@ -969,6 +1012,7 @@ static void power_pd_dump_caps(void)
 }
 #else
 #define power_pd_dump_caps()            do {} while(0)
+#define power_pd_caps_dumped_reset()    do {} while(0)
 #endif
 
 
@@ -1029,6 +1073,10 @@ static void power_pd_auto_resolve(uint32_t now_ms)
 
   if(idx == POWER_PD_INDEX_NONE)
   {
+    /* 读失败：可能这颗不是 PD 源，也可能这么密集的读把 I2C1 读锁死了。先做一次总线
+     * 恢复，别让一次失败的解析把后面的纠偏一起带走。 */
+    power_i2c_recover_bus();
+
     /* 读不出能力表：可能这颗根本不是 PD 源（纯 QC/DC 头），也可能缓冲一直没稳定。
      * 试满次数就不再等，直接按上限要档，谈不成自然有 watchdog 一层层往下退。 */
     if(power_pd_auto_tries >= POWER_PD_AUTO_MAX_TRIES)
@@ -1183,7 +1231,18 @@ static void power_pd_watchdog(uint32_t now_ms)
        ((uint32_t)(now_ms - power_pd_step_ms) >= POWER_PD_BACKOFF_MS))
     {
       power_pd_step_ms = now_ms;
+
+      /* 先做总线恢复再探。I2C1 一旦锁死（一笔事务之后全在地址阶段 TIMEOUT），光
+       * 重新探测是起不来的 —— 实测就是这么一直 found=0；得 9 个时钟 + STOP 把卡在
+       * 低电平的从机放开，再复位重新初始化我们自己的 I2C1。 */
+      power_i2c_recover_bus();
       (void)power_ch224a_find();
+
+      if(power_ch224a_found != 0U)
+      {
+        /* 重新发现芯片（换供电方、或者总线刚从锁死里恢复）：能力表允许再 dump 一次 */
+        power_pd_caps_dumped_reset();
+      }
 
       POWER_DBG("\r\n[pd] reprobe found=");
       POWER_DBG_DEC(power_ch224a_found);
