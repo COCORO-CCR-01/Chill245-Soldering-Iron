@@ -38,93 +38,6 @@
 
 #define menu_config                     g_eeprom_params
 
-/* 查 PD VOLT 不记忆用的串口打点：把"点 MENU 循环选项"写进去的值和地址、以及每次
- * 打开菜单时读到的值和地址打出来。两边地址不一样就说明菜单项指向的不是
- * g_eeprom_params.ch224a_index 本体；地址一样、值不一样，就是中途有人改回去。
- * 关掉（改成 0）这些代码整体不参与编译。 */
-#define MENU_DEBUG                      (0U)
-
-#if MENU_DEBUG
-#include "at32f421_usart.h"
-
-static void menu_dbg_char(char c)
-{
-  while(usart_flag_get(USART1, USART_TDBE_FLAG) == RESET)
-  {
-  }
-
-  usart_data_transmit(USART1, (uint16_t)c);
-}
-
-static void menu_dbg_str(const char *s)
-{
-  while(*s != '\0')
-  {
-    menu_dbg_char(*s);
-    s++;
-  }
-}
-
-static void menu_dbg_dec(uint32_t v)
-{
-  char buf[10];
-  uint8_t i = 0U;
-
-  if(v == 0U)
-  {
-    menu_dbg_char('0');
-    return;
-  }
-
-  while(v != 0U)
-  {
-    buf[i] = (char)('0' + (v % 10U));
-    v /= 10U;
-    i++;
-  }
-
-  while(i > 0U)
-  {
-    i--;
-    menu_dbg_char(buf[i]);
-  }
-}
-
-static void menu_dbg_hex(uint32_t v)
-{
-  uint8_t i;
-  uint8_t started = 0U;
-
-  for(i = 0U; i < 8U; i++)
-  {
-    uint8_t nibble = (uint8_t)((v >> ((7U - i) * 4U)) & 0xFU);
-
-    if((nibble != 0U) || (started != 0U))
-    {
-      started = 1U;
-      menu_dbg_char((char)((nibble < 10U) ? ('0' + nibble) : ('a' + nibble - 10U)));
-    }
-  }
-
-  if(started == 0U)
-  {
-    menu_dbg_char('0');
-  }
-}
-
-/* 打印"当前 PD VOLT 这一项"的值和它指向的地址，who 是打点位置的名字 */
-static void menu_dbg_pdvolt(const char *who)
-{
-  menu_dbg_str("\r\n[mn] ");
-  menu_dbg_str(who);
-  menu_dbg_str(" val=");
-  menu_dbg_dec(*(uint8_t *)&g_eeprom_params.ch224a_index);
-  menu_dbg_str(" field=0x");
-  menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
-  menu_dbg_str("\r\n");
-}
-#endif
-
 /* PD VOLT 的"合法值"影子。
  *
  * 实测串口记录：点 MENU 写入的地址就是 g_eeprom_params.ch224a_index 本体（打出来的
@@ -537,10 +450,6 @@ void menu_open(void)
   (void)sm_set_heater_enabled(0U);
 
   eeprom_capture_current();
-#if MENU_DEBUG
-  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
-  menu_dbg_pdvolt("open");
-#endif
   /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
   if(menu_pdvolt_shadow_valid == 0U)
   {
@@ -549,13 +458,6 @@ void menu_open(void)
   }
   else if(menu_config.ch224a_index != menu_pdvolt_shadow)
   {
-#if MENU_DEBUG
-    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
-    menu_dbg_dec(menu_config.ch224a_index);
-    menu_dbg_str(" -> restore ");
-    menu_dbg_dec(menu_pdvolt_shadow);
-    menu_dbg_str("\r\n");
-#endif
     menu_config.ch224a_index = menu_pdvolt_shadow;
   }
 
@@ -582,10 +484,6 @@ void menu_open_service_setup(void)
   power_wake();
   (void)sm_set_heater_enabled(0U);
   eeprom_capture_current();
-#if MENU_DEBUG
-  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
-  menu_dbg_pdvolt("open");
-#endif
   /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
   if(menu_pdvolt_shadow_valid == 0U)
   {
@@ -594,13 +492,6 @@ void menu_open_service_setup(void)
   }
   else if(menu_config.ch224a_index != menu_pdvolt_shadow)
   {
-#if MENU_DEBUG
-    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
-    menu_dbg_dec(menu_config.ch224a_index);
-    menu_dbg_str(" -> restore ");
-    menu_dbg_dec(menu_pdvolt_shadow);
-    menu_dbg_str("\r\n");
-#endif
     menu_config.ch224a_index = menu_pdvolt_shadow;
   }
 
@@ -1031,18 +922,6 @@ static void menu_enter_item(void)
           menu_pdvolt_shadow = value;
           menu_pdvolt_shadow_valid = 1U;
         }
-#if MENU_DEBUG
-        /* 写入的值 + 这一项真正指向的地址 */
-        menu_dbg_str("\r\n[mn] enum ");
-        menu_dbg_str(item->label);
-        menu_dbg_str(" -> ");
-        menu_dbg_dec(value);
-        menu_dbg_str(" @0x");
-        menu_dbg_hex((uint32_t)item->value);
-        menu_dbg_str(" field=0x");
-        menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
-        menu_dbg_str("\r\n");
-#endif
         menu_need_draw = 1U;
       }
       break;
