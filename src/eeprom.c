@@ -445,10 +445,11 @@ void eeprom_init(void)
     g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;
     g_eeprom_params.max_power_pct = 50.0f;     /* 默认功率比例 50% */
-    /* 欠压门限 13.5V：20V 合同被打回 15V 默认档还算能用，不该报欠压；13.5V 以下
-     * 才是供电真的不行了。PD VOLT 只放开 15V / 20V，最低允许档实测 14.9V 就在这条
-     * 线之上，所以门限不需要跟着档位变。 */
-    g_eeprom_params.low_voltage_v = 13.5f;
+    /* 欠压门限 13.0V。原来给的是 13.5V：15V 档实测 14.9V，看着有 1.4V 余量，但加热
+     * 时 VIN 的纹波实测约 2.5V 峰峰，谷值能掉到 14.0V 附近，13.5V 只剩 0.5V，大功率
+     * 加热容易撞上误报 INPUT UNDERVOLTAGE。降到 13.0V 给纹波留出 1V，而菜单 PD VOLT
+     * 最低只放开 15V（低压 PMOS 导通电阻大、发热大），所以这条线以下才是供电真不行。 */
+    g_eeprom_params.low_voltage_v = 13.0f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;
     g_eeprom_params.app_colors[0] = 0xFC9FU;
