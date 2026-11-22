@@ -184,7 +184,17 @@ static void hms_draw_fault_notice(void)
   fmt_snprintf(line, sizeof(line), "COLD %dC", cold_c);
   display_draw_string(90U, 2U, line, HMS_BLACK, HMS_YELLOW, 2U);
 
-  fmt_snprintf(line, sizeof(line), "NOW %dC", tip_c);
+  /* 温度本身不可信（没插烙铁 / 热偶开路）的时候，这里不要印一个假数字。主界面这种
+     情况画 "---"，故障界面跟着一起画，用户看一眼就知道是"没插"，而不是"读到 X 度"。 */
+  if(status.temp_valid != 0U)
+  {
+    fmt_snprintf(line, sizeof(line), "NOW %dC", tip_c);
+  }
+  else
+  {
+    fmt_snprintf(line, sizeof(line), "NOW ---");
+  }
+
   display_draw_string(2U, 16U, line, HMS_BLACK, HMS_YELLOW, 2U);
 
   fmt_snprintf(line, sizeof(line), "SET %dC", set_c);
