@@ -139,6 +139,8 @@ static uint8_t power_read_vibration_level(void);
 static uint16_t power_dbg_last_mv;
 /* 上一条跳变打印的时间，限死最少间隔，别拿串口当示波器刷 */
 static uint32_t power_dbg_last_print_ms;
+/* 配置来源只打一次 */
+static uint8_t power_dbg_cfg_done;
 
 static void power_dbg_char(char c)
 {
@@ -1176,6 +1178,27 @@ static void power_pd_give_up(uint32_t now_ms, uint8_t index)
  * 不会再碰到 5V / 9V 那种"芯片谈不到、只能保持默认档"的档位。 */
 static void power_pd_slot_task(uint32_t now_ms)
 {
+#if POWER_CH224A_DEBUG
+  /* 第一拍打一次"配置从哪来的"，用来查"改了 PD VOLT 重启又变回 AUTO"：
+   *   opt=2 eev=1  -> 存和读都对，问题出在界面显示；
+   *   opt=0 eev=1  -> 存进去的就是 0，保存那条链路的问题；
+   *   eev=0        -> 压根没认到有效记录，走的是出厂默认（opt 被强制成 0），
+   *                   ee 会告诉我们是 CORRUPT 还是 OLD_VERSION。
+   * 放在这一拍而不是 power_init()，是因为 power_init() 跑得比 eeprom_init() 早，
+   * 那时候参数还没加载。 */
+  if(power_dbg_cfg_done == 0U)
+  {
+    power_dbg_cfg_done = 1U;
+
+    POWER_DBG("\r\n[pd] cfg opt=");
+    POWER_DBG_DEC(g_eeprom_params.ch224a_index);
+    POWER_DBG(" eev=");
+    POWER_DBG_DEC(eeprom_has_valid_record());
+    POWER_DBG(" ee=");
+    POWER_DBG_DEC((uint32_t)eeprom_get_error());
+    POWER_DBG("\r\n");
+  }
+#endif
   uint8_t option;
   uint8_t slot;
 

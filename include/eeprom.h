@@ -22,7 +22,14 @@ extern "C" {
 #define EEPROM_SECTOR0_ADDR             (EEPROM_FLASH_BASE)
 #define EEPROM_SECTOR1_ADDR             (EEPROM_FLASH_BASE + EEPROM_SECTOR_SIZE)
 #define EEPROM_MAGIC                    (0x4A424345UL)   /* "JBCE" */
-#define EEPROM_FORMAT_VERSION           (0x0010U)
+#define EEPROM_FORMAT_VERSION           (0x0011U)
+
+/* 可以原地迁移的最低版本。从 0x000E 起 eeprom_params_t 的字段布局就没再改过，后面
+ * 几次递增只是改语义 / 改默认值，老记录里的字段逐字节仍然可用。所以只要 size /
+ * commit / CRC 对得上，就把老记录读进来按版本做少量换算（见 eeprom.c 的
+ * eeprom_migrate()），而不是整块重置把用户调好的 PID、热偶标定、休眠设置一起丢掉。
+ * 比这更早的版本布局不明，仍然按"无有效记录"走出厂默认。 */
+#define EEPROM_FORMAT_VERSION_MIGRATE_MIN (0x000EU)
 
 /**
   * @brief  所有掉电保存参数

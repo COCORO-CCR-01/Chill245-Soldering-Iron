@@ -21,7 +21,6 @@
 #include "version.h"
 #include "bootguard.h"
 #include "statemachine.h"
-#include "heater.h"
 #include "pid.h"
 #include "temp.h"
 #include "verifyheater.h"
@@ -38,6 +37,107 @@
 #include <string.h>
 
 #define menu_config                     g_eeprom_params
+
+/* 查 PD VOLT 不记忆用的串口打点：把"点 MENU 循环选项"写进去的值和地址、以及每次
+ * 打开菜单时读到的值和地址打出来。两边地址不一样就说明菜单项指向的不是
+ * g_eeprom_params.ch224a_index 本体；地址一样、值不一样，就是中途有人改回去。
+ * 关掉（改成 0）这些代码整体不参与编译。 */
+#define MENU_DEBUG                      (0U)
+
+#if MENU_DEBUG
+#include "at32f421_usart.h"
+
+static void menu_dbg_char(char c)
+{
+  while(usart_flag_get(USART1, USART_TDBE_FLAG) == RESET)
+  {
+  }
+
+  usart_data_transmit(USART1, (uint16_t)c);
+}
+
+static void menu_dbg_str(const char *s)
+{
+  while(*s != '\0')
+  {
+    menu_dbg_char(*s);
+    s++;
+  }
+}
+
+static void menu_dbg_dec(uint32_t v)
+{
+  char buf[10];
+  uint8_t i = 0U;
+
+  if(v == 0U)
+  {
+    menu_dbg_char('0');
+    return;
+  }
+
+  while(v != 0U)
+  {
+    buf[i] = (char)('0' + (v % 10U));
+    v /= 10U;
+    i++;
+  }
+
+  while(i > 0U)
+  {
+    i--;
+    menu_dbg_char(buf[i]);
+  }
+}
+
+static void menu_dbg_hex(uint32_t v)
+{
+  uint8_t i;
+  uint8_t started = 0U;
+
+  for(i = 0U; i < 8U; i++)
+  {
+    uint8_t nibble = (uint8_t)((v >> ((7U - i) * 4U)) & 0xFU);
+
+    if((nibble != 0U) || (started != 0U))
+    {
+      started = 1U;
+      menu_dbg_char((char)((nibble < 10U) ? ('0' + nibble) : ('a' + nibble - 10U)));
+    }
+  }
+
+  if(started == 0U)
+  {
+    menu_dbg_char('0');
+  }
+}
+
+/* 打印"当前 PD VOLT 这一项"的值和它指向的地址，who 是打点位置的名字 */
+static void menu_dbg_pdvolt(const char *who)
+{
+  menu_dbg_str("\r\n[mn] ");
+  menu_dbg_str(who);
+  menu_dbg_str(" val=");
+  menu_dbg_dec(*(uint8_t *)&g_eeprom_params.ch224a_index);
+  menu_dbg_str(" field=0x");
+  menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
+  menu_dbg_str("\r\n");
+}
+#endif
+
+/* PD VOLT 的"合法值"影子。
+ *
+ * 实测串口记录：点 MENU 写入的地址就是 g_eeprom_params.ch224a_index 本体（打出来的
+ * 两个地址相同），eeprom_save() 也存对了（重启读回来 opt=1，还成功谈到 15V 档），
+ * 但在"点完 15V -> 退出菜单 -> 再进菜单"这段时间里，RAM 里那个字节自己变回了 0。
+ * 全工程 grep 没有任何一条语句写这个字段，所以是越界野写：字段在结构体偏移 328，
+ * 紧跟在 voltage_recovery_ms 后面，怀疑是相邻那组 float 被越界访问踩到的。
+ *
+ * 元凶还没抓到，先把这个字段守住 —— 菜单是唯一合法的写入方：菜单写过的值在这里留个
+ * 影子，每次打开菜单发现对不上就恢复回来，并在串口打一条 clobbered 记录，既不让界面
+ * 显示错的档位，也把被踩这件事留在日志里好继续追。 */
+static uint8_t menu_pdvolt_shadow;
+static uint8_t menu_pdvolt_shadow_valid;
 
 #define MENU_LONG_MS                    (2000U)
 #define MENU_ROWS                       (5U)
@@ -160,7 +260,6 @@ static void menu_action_autotune(void);
 static void menu_action_cancel_autotune(void);
 static void menu_action_clear_fault(void);
 static void menu_action_heater_toggle(void);
-static void menu_action_stop_heat(void);
 static void menu_action_hms(void);
 static void menu_action_defaults(void);
 static void menu_action_tip_cal(void);
@@ -317,7 +416,6 @@ static const menu_page_t menu_page_system =
 
 static const menu_item_t menu_root_items[] =
 {
-  { "STOP HEAT",     MENU_ITEM_ACTION,  NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_stop_heat },
   { "TEMPERATURE",   MENU_ITEM_SUBMENU, NULL, &menu_page_temperature, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "BOOST",         MENU_ITEM_SUBMENU, NULL, &menu_page_boost,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "SLEEP / POWER", MENU_ITEM_SUBMENU, NULL, &menu_page_sleep,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
@@ -431,6 +529,27 @@ void menu_open(void)
   (void)sm_set_heater_enabled(0U);
 
   eeprom_capture_current();
+#if MENU_DEBUG
+  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
+  menu_dbg_pdvolt("open");
+#endif
+  /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
+  if(menu_pdvolt_shadow_valid == 0U)
+  {
+    menu_pdvolt_shadow = menu_config.ch224a_index;
+    menu_pdvolt_shadow_valid = 1U;
+  }
+  else if(menu_config.ch224a_index != menu_pdvolt_shadow)
+  {
+#if MENU_DEBUG
+    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
+    menu_dbg_dec(menu_config.ch224a_index);
+    menu_dbg_str(" -> restore ");
+    menu_dbg_dec(menu_pdvolt_shadow);
+    menu_dbg_str("\r\n");
+#endif
+    menu_config.ch224a_index = menu_pdvolt_shadow;
+  }
 
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
   menu_nav.page = &menu_page_root;
@@ -455,6 +574,27 @@ void menu_open_service_setup(void)
   power_wake();
   (void)sm_set_heater_enabled(0U);
   eeprom_capture_current();
+#if MENU_DEBUG
+  /* 打开菜单（完整设置页和服务页都打）时把当前 PD VOLT 值和地址打出来 */
+  menu_dbg_pdvolt("open");
+#endif
+  /* PD VOLT 被野写守住：第一次打开先拿 EEPROM 读回来的值当基准，之后对不上就恢复 */
+  if(menu_pdvolt_shadow_valid == 0U)
+  {
+    menu_pdvolt_shadow = menu_config.ch224a_index;
+    menu_pdvolt_shadow_valid = 1U;
+  }
+  else if(menu_config.ch224a_index != menu_pdvolt_shadow)
+  {
+#if MENU_DEBUG
+    menu_dbg_str("\r\n[mn] pdvolt clobbered ");
+    menu_dbg_dec(menu_config.ch224a_index);
+    menu_dbg_str(" -> restore ");
+    menu_dbg_dec(menu_pdvolt_shadow);
+    menu_dbg_str("\r\n");
+#endif
+    menu_config.ch224a_index = menu_pdvolt_shadow;
+  }
 
   menu_nav.view = (uint8_t)MENU_VIEW_LIST;
   menu_nav.page = &menu_page_power_service;
@@ -877,6 +1017,24 @@ static void menu_enter_item(void)
           value = 0U;
         }
         *(uint8_t *)item->value = value;
+        /* 菜单自己写下的 PD VOLT 值留个影子，用来识别"别人踩的" */
+        if((const void *)item->value == (const void *)&menu_config.ch224a_index)
+        {
+          menu_pdvolt_shadow = value;
+          menu_pdvolt_shadow_valid = 1U;
+        }
+#if MENU_DEBUG
+        /* 写入的值 + 这一项真正指向的地址 */
+        menu_dbg_str("\r\n[mn] enum ");
+        menu_dbg_str(item->label);
+        menu_dbg_str(" -> ");
+        menu_dbg_dec(value);
+        menu_dbg_str(" @0x");
+        menu_dbg_hex((uint32_t)item->value);
+        menu_dbg_str(" field=0x");
+        menu_dbg_hex((uint32_t)&g_eeprom_params.ch224a_index);
+        menu_dbg_str("\r\n");
+#endif
         menu_need_draw = 1U;
       }
       break;
@@ -990,24 +1148,6 @@ static void menu_action_heater_toggle(void)
 {
   (void)sm_set_heater_enabled((sm_is_heater_enabled() != 0U) ? 0U : 1U);
   menu_need_draw = 1U;
-}
-
-/* 停止加热：给用户的"立刻停下"。放在菜单第一页第一条，闭着眼也能按到。
- *
- * 和 PROTECTION / SYSTEM 页里的 HEATER ON/OFF 的区别是方向：那个是开关，手抖多按
- * 一下就可能反过来把加热打开；这个只做"关"，按多少次都还是停 —— 作为保护动作，
- * 方向必须唯一，不能因为连点变成反向操作。
- *
- * 关完直接退出菜单，回到主界面好让人盯着温度往下掉；heater_force_off() 是硬关
- * PWM，不等下一个控制周期，响应快一拍。
- *
- * 恢复加热：回主界面按任意键（main.c 里的手动恢复路径），或者长按 PREV。 */
-static void menu_action_stop_heat(void)
-{
-  (void)sm_set_heater_enabled(0U);
-  heater_force_off();
-  buzzer_play(BUZZER_SOUND_KEY);
-  menu_close();
 }
 
 static void menu_action_hms(void)
@@ -1331,20 +1471,28 @@ static void menu_draw_list(void)
 
     ui_icon_draw(menu_item_icon(item), 4U, (uint16_t)(y + 1U),
                  (index == menu_nav.selected) ? UI_WHITE : UI_GRAY);
-    display_draw_string(14U, (uint16_t)(y + 3U), item->label,
+    /* 菜单列表用 2 倍整数放大。这套点阵是 3 列 x 5 行，只有整数倍才是点对点的干净
+     * 字：试过 1.5 倍（3 列凑 5 列、5 行凑 8 行），凑出来列宽 2/1/2 不等，笔画粗细
+     * 不一致，发糊发歪反而看不清，所以回到整数 2 倍 —— 字形 6x10、前进 8。
+     * 行高 11、行底色只画到 10，所以字顶对齐画在 y（原来是 1 倍的 y+3）。
+     * 宽度逐条点算过，标签和数值都是 2 倍也不撞：最长的带值标签 "HIGH TEMP C"
+     * 11 字符到 14+88=102，最长的数值 "2000C/S" 7 字符从 96 起画。 */
+    display_draw_string(14U, y, item->label,
                         (index == menu_nav.selected) ? UI_WHITE : UI_GRAY,
-                        background, 1U);
+                        background, 2U);
 
     menu_format_item_value(item, value, sizeof(value));
 
     if(value[0] != '\0')
     {
-      uint16_t width = display_string_width(value, 1U);
+      /* 数值同样 2 倍整数放大，宽度用 display_string_width(value, 2U) 算，
+       * 右对齐才不会偏；右边界沿用 156（带箭头那行 144），2 倍下墨迹末端落在 154，
+       * 离屏幕右边还有 6 像素，不会裁字 */
+      uint16_t width = display_string_width(value, 2U);
       uint16_t x = (uint16_t)((has_arrow != 0U) ? (144U - width) :
                                                     (156U - width));
 
-      display_draw_string(x, (uint16_t)(y + 3U), value, color,
-                          background, 1U);
+      display_draw_string(x, y, value, color, background, 2U);
     }
 
     if(has_arrow != 0U)
