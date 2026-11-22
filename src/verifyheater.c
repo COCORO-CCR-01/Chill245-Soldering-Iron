@@ -305,7 +305,13 @@ void verifyheater_update(const temp_data_t *temp,
   /* 1. 热电偶开路：温度 >= R7 对应理论失效温度 */
   open_cond = 0U;
 
-  if((adc_raw->valid != 0U) && (temp->valid != 0U))
+  /* 这里不能再要求 temp->valid：温度模块在过滤值超过 580°C 时就会把 valid 清掉
+     （为了让界面画 "---" 并且让 PID 停止输出）。如果这里还拿 valid 当门，没插烙铁
+     这种最常见的情况反而进不了 TC_OPEN 分支，被后面 200ms 的 TEMP_INVALID 抢先锁存
+     —— 那是误诊：开路是"没插烙铁"，不是"温度读数不可信"。
+     判据本身用的是未滤波的瞬时热电偶温度，跟 temp->valid 无关，去掉这层门不影响
+     判据的可靠性；室温 NTC 自己坏掉那种还是由 TEMP_INVALID 负责。 */
+  if(adc_raw->valid != 0U)
   {
     /* 用未滤波的瞬时热电偶温度，避免滤波滞后让 OVERTEMP 抢先锁存 */
     if(temp_thermocouple_default_celsius(adc_raw->thermocouple,
