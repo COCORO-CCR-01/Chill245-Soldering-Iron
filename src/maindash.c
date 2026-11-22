@@ -447,12 +447,16 @@ static int cl_last_tip = -1;
 static int cl_last_power = -1;
 static uint8_t cl_last_set;
 static uint8_t cl_last_valid;
-static uint8_t cl_last_pair;
 static const char *cl_last_top;
 static const char *cl_last_status;
 static int cl_last_seconds = -1;
 static uint8_t cl_last_vibration;
-static uint32_t cl_last_right_ms;
+/* 右侧轮播块上一次"真正画上去的内容"：页码 + 两个值的整数形式，见
+ * maindash_classic_right_signature()。以前没有可比对的东西，只能每 500ms 无脑重画
+ * 整块，这就是右边必然闪烁的直接原因。 */
+static uint8_t cl_last_right_pair;
+static int cl_last_right_a = -1;
+static int cl_last_right_b = -1;
 
 static void maindash_classic_top_draw(const sm_status_t *status)
 {
@@ -512,6 +516,27 @@ static void maindash_classic_temp_draw(const sm_status_t *status, uint32_t now_m
   }
   maindash_classic_temp_digit(44U, 18U, (uint8_t)units);
   display_draw_string_transparent(66U, 28U, "C", UI_WHITE, 2U);
+}
+
+/* 右侧轮播块"这一屏要显示成什么样"的整数签名，只拿来做脏判断。
+ * 取值必须和 maindash_classic_right_draw() 画上去的内容严格一致：
+ *   pair 0（SET / MODE）：a = 设定温度取整到 1C，b = PID 模式档位
+ *   pair 1（VIN / COLD）：a = 输入电压截断到 0.1V（和显示的 %d.%dV 一致），
+ *                         b = 冷端温度取整到 0.1C（和显示的 %d.%dC 一致）
+ * 签名相同就说明屏上内容一模一样，整块一个像素都不用动。 */
+static void maindash_classic_right_signature(const sm_status_t *status, uint8_t pair,
+                                             int *a, int *b)
+{
+  if(pair == 0U)
+  {
+    *a = maindash_round_float(status->setpoint_c);
+    *b = (int)status->mode;
+  }
+  else
+  {
+    *a = (int)(power_get_voltage_mv() / 100U);
+    *b = maindash_round_float(status->room_c * 10.0f);
+  }
 }
 
 static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_ms)
@@ -634,14 +659,12 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   uint16_t status_color;
   uint32_t seconds;
   uint8_t vibration;
+  int right_a;
+  int right_b;
 
-  if(maindash_force_full != 0U)
-  {
-    maindash_force_full = 0U;
-    maindash_classic_draw(status, now_ms);
-    goto cache;
-  }
-
+  /* 先把这一帧"要显示成什么样"全部算出来，再决定哪一块需要画。这段必须放在整页
+   * 重绘分支之前：那个分支用 goto cache 收尾，算晚了存进缓存的就是没初始化的值
+   * （原来就是这个顺序，整页重绘之后 cl_last_pair 那几个缓存拿到的是栈上的垃圾）。 */
   show_set = ((int32_t)(maindash_setpoint_hint_until_ms - now_ms) > 0) ? 1U : 0U;
   tip_c = show_set ? maindash_round_float(status->setpoint_c) :
           ((status->temp_valid != 0U) ? maindash_round_float(status->tip_c) : 0);
@@ -652,6 +675,14 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   status_text = maindash_status_text(status, &status_color);
   seconds = (power_get_sleep_remaining_ms() + 999U) / 1000U;
   vibration = power_get_vibration_state();
+  maindash_classic_right_signature(status, pair, &right_a, &right_b);
+
+  if(maindash_force_full != 0U)
+  {
+    maindash_force_full = 0U;
+    maindash_classic_draw(status, now_ms);
+    goto cache;
+  }
 
   if((show_set != cl_last_set) ||
      (tip_c != cl_last_tip) ||
@@ -663,14 +694,13 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= CL_DIRTY_TOP | CL_DIRTY_PROGRESS;
   }
-  if((top_state != cl_last_top) || (pair != cl_last_pair))
+  /* 顶栏内容是功率条 + Chill245 + 状态字 + 百分比，和右侧轮播的页码无关。原来这里
+   * || 了一个 (pair != cl_last_pair)，等于每 2 秒白刷一整条顶栏（wallpaper_blit
+   * 重铺 160x12 + 三段文字），也是闪烁来源之一，去掉；功率百分比变化上面已经会标
+   * CL_DIRTY_TOP，不会漏掉。 */
+  if(top_state != cl_last_top)
   {
     mask |= CL_DIRTY_TOP;
-  }
-  if((uint32_t)(now_ms - cl_last_right_ms) >= 500U)
-  {
-    mask |= CL_DIRTY_RIGHT;
-    cl_last_right_ms = now_ms;
   }
   if((status_text != cl_last_status) ||
      ((int)seconds != cl_last_seconds) ||
@@ -678,7 +708,15 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= CL_DIRTY_BOTTOM;
   }
-  if(pair != cl_last_pair)
+  /* 右侧轮播块改成"值变了才画"：页码变了，或者这一屏真正要显示的两个值变了，才标脏。
+   * 原来这里没有任何值判断，(now_ms - cl_last_right_ms) >= 500 就重画整块 —— 
+   * wallpaper_blit 重铺 84x49 背景 + 6 段文字 + 一条分隔线，2Hz 的整块擦掉重画，
+   * 就是用户反馈"右边必然闪"的直接原因。签名和画上去的内容严格一致（VIN 精确到
+   * 0.1V、冷端 0.1C、设定温度 1C、MODE 档位），这些真变了照样立刻刷新，
+   * 没变就一个像素都不动。 */
+  if((pair != cl_last_right_pair) ||
+     (right_a != cl_last_right_a) ||
+     (right_b != cl_last_right_b))
   {
     mask |= CL_DIRTY_RIGHT;
   }
@@ -693,7 +731,9 @@ cache:
   cl_last_power = (int)status->power;
   cl_last_set = show_set;
   cl_last_valid = status->temp_valid;
-  cl_last_pair = pair;
+  cl_last_right_pair = pair;
+  cl_last_right_a = right_a;
+  cl_last_right_b = right_b;
   cl_last_top = top_state;
   cl_last_status = status_text;
   cl_last_seconds = (int)seconds;
