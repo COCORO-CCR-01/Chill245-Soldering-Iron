@@ -1462,6 +1462,14 @@ static void menu_draw_curve(void)
       break;
     }
 
+    /* 只是上下挪一格选中条时（menu_partial_row）：跟列表页一样，这一行既不是新的
+     * 选中行也不是刚被取消选中的那一行，就一个像素都不碰。 */
+    if((menu_partial_row != 0U) &&
+       (index != menu_nav.selected) && (index != menu_partial_prev))
+    {
+      continue;
+    }
+
     y = (uint8_t)(MENU_ROW_Y + (row * MENU_ROW_H));
     background = (index == menu_nav.selected) ? UI_ACCENT : UI_BLACK;
 
@@ -1470,6 +1478,11 @@ static void menu_draw_curve(void)
       display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
       display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
+    }
+    else
+    {
+      /* 整行铺黑：局部刷新时把这一行原来的橙色引导条和 ACCENT 底色一起擦掉 */
+      display_fill_rect(0U, y, DISPLAY_WIDTH, MENU_ROW_H - 1U, UI_BLACK);
     }
 
     ui_icon_draw(UI_ICON_CURVE, 4U, (uint16_t)(y + 1U),
@@ -1656,8 +1669,7 @@ static void menu_draw(void)
    * 闪一下的原因。这里只重画页眉计数（计数没变连页眉都不碰）和受影响的两个列表行。
    * EDIT / CURVE 两个视图布局不一样，不走这条路径。 */
   if((menu_partial_row != 0U) &&
-     (menu_nav.view != (uint8_t)MENU_VIEW_EDIT) &&
-     (menu_nav.view != (uint8_t)MENU_VIEW_CURVE))
+     (menu_nav.view != (uint8_t)MENU_VIEW_EDIT))
   {
     uint8_t count = (menu_nav.page != NULL) ? menu_nav.page->count : 0U;
 
@@ -1665,15 +1677,32 @@ static void menu_draw(void)
        ((menu_nav.selected != menu_shown_selected) ||
         (count != menu_shown_count)))
     {
+      if(menu_nav.view == (uint8_t)MENU_VIEW_CURVE)
+      {
+        title = (menu_nav.curve_kind == (uint8_t)MENU_CURVE_CUSTOM) ?
+                "CUSTOM PID" : "TEMP CAL";
+      }
+      else
+      {
+        title = (menu_nav.page != NULL) ? menu_nav.page->title : "SETTINGS";
+      }
+
       menu_draw_header_counter(counter, sizeof(counter));
-      menu_draw_header((menu_nav.page != NULL) ? menu_nav.page->title : "SETTINGS",
-                       counter);
+      menu_draw_header(title, counter);
     }
 
     menu_shown_selected = menu_nav.selected;
     menu_shown_count = count;
 
-    menu_draw_list();
+    if(menu_nav.view == (uint8_t)MENU_VIEW_CURVE)
+    {
+      menu_draw_curve();
+    }
+    else
+    {
+      menu_draw_list();
+    }
+
     menu_partial_row = 0U;
     menu_need_draw = 0U;
     return;
