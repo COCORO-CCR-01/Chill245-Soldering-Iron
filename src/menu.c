@@ -223,6 +223,14 @@ static uint8_t menu_nav_depth;
 static uint8_t menu_open_flag;
 static uint8_t menu_service_mode;
 static uint8_t menu_need_draw;
+/* 只是把选中条上下挪一格时走局部刷新：可见窗口没动，就只重画旧选中行和新选中行
+ * 这两行，计数变了再连页眉一起重画。原来每次点击都是 display_clear 整屏 160x80
+ * 刷黑（25600 字节，9MHz 下约 23ms）再把页眉、五行、页脚全部重画，这就是
+ * "点上下键整屏文字一起闪"的原因。 */
+static uint8_t menu_partial_row;
+static uint8_t menu_partial_prev;
+static uint8_t menu_shown_selected;
+static uint8_t menu_shown_count;
 static uint8_t menu_long_handled;
 static uint8_t menu_quick_edit;
 static uint32_t menu_defaults_arm_until;
@@ -1077,22 +1085,34 @@ static void menu_move(int8_t direction)
     return;
   }
 
-  if(direction < 0)
+  /* 记下移动前的选中行和滚动位置：可见窗口没变的话，就只重画旧选中行和新选中行
+   * 这两行，不用整屏清黑重画。 */
   {
-    if(menu_nav.selected > 0U)
+    uint8_t prev_selected = menu_nav.selected;
+    uint8_t prev_first = menu_nav.first;
+
+    if(direction < 0)
     {
-      menu_nav.selected--;
+      if(menu_nav.selected > 0U)
+      {
+        menu_nav.selected--;
+      }
     }
-  }
-  else
-  {
-    if(menu_nav.selected < (uint8_t)(count - 1U))
+    else
     {
-      menu_nav.selected++;
+      if(menu_nav.selected < (uint8_t)(count - 1U))
+      {
+        menu_nav.selected++;
+      }
     }
+
+    menu_adjust_first();
+
+    menu_partial_row = ((menu_nav.first == prev_first) &&
+                        (prev_selected != menu_nav.selected)) ? 1U : 0U;
+    menu_partial_prev = prev_selected;
   }
 
-  menu_adjust_first();
   menu_need_draw = 1U;
 }
 
@@ -1454,6 +1474,14 @@ static void menu_draw_list(void)
       break;
     }
 
+    /* 只是上下挪一格选中条时（menu_partial_row）：这一行既不是新的选中行也不是刚
+     * 被取消选中的那一行，就一个像素都不碰，避免整屏文字重画一遍引起闪烁。 */
+    if((menu_partial_row != 0U) &&
+       (index != menu_nav.selected) && (index != menu_partial_prev))
+    {
+      continue;
+    }
+
     item = &menu_nav.page->items[index];
     y = (uint8_t)(MENU_ROW_Y + (row * MENU_ROW_H));
     color = (index == menu_nav.selected) ? UI_VALUE : UI_CYAN;
@@ -1467,6 +1495,12 @@ static void menu_draw_list(void)
       display_fill_rect(0U, y, 3U, MENU_ROW_H - 1U, UI_ORANGE);
       display_fill_rect(3U, y, (uint16_t)(DISPLAY_WIDTH - 3U),
                         MENU_ROW_H - 1U, UI_ACCENT);
+    }
+    else
+    {
+      /* 整行铺黑：局部刷新时，这一行可能原来是选中行，得把橙色引导条和 ACCENT
+       * 底色一起擦掉，不然选中条会留在原地不动。 */
+      display_fill_rect(0U, y, DISPLAY_WIDTH, MENU_ROW_H - 1U, UI_BLACK);
     }
 
     ui_icon_draw(menu_item_icon(item), 4U, (uint16_t)(y + 1U),
@@ -1677,11 +1711,41 @@ static void menu_draw(void)
 
   if(menu_nav.view == (uint8_t)MENU_VIEW_ABOUT)
   {
+    menu_partial_row = 0U;
     menu_draw_about();
     menu_need_draw = 0U;
     return;
   }
 
+  /* 只是上下挪一格选中条：不整屏 display_clear。整屏 160x80 刷黑是 25600 字节，
+   * 9MHz 下约 23ms，再把页眉、五行、页脚全部重画 —— 那就是点一下方向键整屏文字
+   * 闪一下的原因。这里只重画页眉计数（计数没变连页眉都不碰）和受影响的两个列表行。
+   * EDIT / CURVE 两个视图布局不一样，不走这条路径。 */
+  if((menu_partial_row != 0U) &&
+     (menu_nav.view != (uint8_t)MENU_VIEW_EDIT) &&
+     (menu_nav.view != (uint8_t)MENU_VIEW_CURVE))
+  {
+    uint8_t count = (menu_nav.page != NULL) ? menu_nav.page->count : 0U;
+
+    if((menu_nav.page != &menu_dynamic_page) &&
+       ((menu_nav.selected != menu_shown_selected) ||
+        (count != menu_shown_count)))
+    {
+      menu_draw_header_counter(counter, sizeof(counter));
+      menu_draw_header((menu_nav.page != NULL) ? menu_nav.page->title : "SETTINGS",
+                       counter);
+    }
+
+    menu_shown_selected = menu_nav.selected;
+    menu_shown_count = count;
+
+    menu_draw_list();
+    menu_partial_row = 0U;
+    menu_need_draw = 0U;
+    return;
+  }
+
+  menu_partial_row = 0U;
   display_clear(UI_BLACK);
 
   if(menu_nav.view == (uint8_t)MENU_VIEW_EDIT)
@@ -1726,6 +1790,9 @@ static void menu_draw(void)
     menu_draw_footer("ENT SEL  PREV/NXT  HOLD BACK");
   }
 
+  /* 整屏重画之后，把页眉计数画到的位置记下来，供局部刷新判断要不要动页眉 */
+  menu_shown_selected = menu_nav.selected;
+  menu_shown_count = (menu_nav.page != NULL) ? menu_nav.page->count : 0U;
   menu_need_draw = 0U;
 }
 
