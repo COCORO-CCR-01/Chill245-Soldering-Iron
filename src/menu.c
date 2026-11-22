@@ -936,7 +936,13 @@ static void menu_enter_item(void)
           uint8_t light = *(uint8_t *)item->value;
 
           display_set_light_theme(light);
-          appcolors_set(menu_config.app_colors);
+
+          /* 撤掉浅色叠加，回到基准（暗色）调色板。这里绝对不能调
+           * appcolors_set(menu_config.app_colors)：那份数据可能已经被上一次存盘时
+           * 导出的"浅色叠加后"的调色板污染了，切回暗色反而把近黑的文字色装了回来
+           * —— 用户实测的"白色切回黑色必坏"就是这么来的。基准板由 appcolors 模块
+           * 自己维护，浅色叠加从不改它。 */
+          appcolors_restore_base();
 
           if(light != 0U)
           {
