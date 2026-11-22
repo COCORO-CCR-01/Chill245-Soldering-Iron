@@ -137,6 +137,8 @@ static uint8_t power_read_vibration_level(void);
 #if POWER_CH224A_DEBUG
 /* 上一次打出来的输入电压，用来判断"跳了一档没有" */
 static uint16_t power_dbg_last_mv;
+/* 上一条跳变打印的时间，限死最少间隔，别拿串口当示波器刷 */
+static uint32_t power_dbg_last_print_ms;
 
 static void power_dbg_char(char c)
 {
@@ -1815,11 +1817,17 @@ static void power_voltage_task(uint32_t now_ms)
 #if POWER_CH224A_DEBUG
   /* 输入电压跳一档就打一行，带上当时的目标档、状态机状态、芯片在不在线。
    * 以后再遇到"电压自己掉了"，一眼能分清是我们写 0x0A 写的，还是供电方退档 /
-   * CH224A 掉回 CFG 默认档：want 和 act 没变却掉档，就是外面干的。 */
+   * CH224A 掉回 CFG 默认档：want 和 act 没变却掉档，就是外面干的。
+   *
+   * 门限取 2500mV：档位级变化最小也有 5000mV（15V->20V），而实测加热一开始工作
+   * VIN 本身就带正负几百毫伏的纹波（刷完第一次抓 30 s，读数在 18.9V~21.4V 之间
+   * 来回晃，2.5V 峰峰值）。上一版用 500mV 直接被纹波当"跳档"打了 7.6KB 串口。
+   * 再加一条最少隔 1 s 才允许打一条，就算哪天真有慢速漂移也灌不死串口。 */
   {
     int32_t dv = (int32_t)power_voltage_mv - (int32_t)power_dbg_last_mv;
 
-    if((dv >= 500) || (dv <= -500))
+    if(((dv >= 2500) || (dv <= -2500))
+       && ((uint32_t)(now_ms - power_dbg_last_print_ms) >= 1000U))
     {
       POWER_DBG("\r\n[pd] vbus ");
       POWER_DBG_DEC(power_dbg_last_mv);
@@ -1836,6 +1844,7 @@ static void power_voltage_task(uint32_t now_ms)
       POWER_DBG("\r\n");
 
       power_dbg_last_mv = power_voltage_mv;
+      power_dbg_last_print_ms = now_ms;
     }
   }
 #endif
