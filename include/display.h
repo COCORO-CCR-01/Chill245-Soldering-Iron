@@ -233,6 +233,19 @@ uint16_t display_contrast_shadow(uint16_t fg);
 uint16_t display_string_width(const char *text, uint8_t scale);
 
 /**
+  * @brief  1.5 倍文本（点阵 3x5 的非整数放大：字形 5x8、前进 6 像素）。
+  * @note   整数倍放大只有 1 倍和 2 倍两档，1 倍看不清、2 倍一行放不下"标签+数值"，
+  *         菜单列表用这一档可以在放大的同时保住一屏 5 行。
+  */
+void display_draw_string_32(uint16_t x, uint16_t y, const char *text,
+                            uint16_t fg, uint16_t bg);
+
+/**
+  * @brief  1.5 倍文本的像素宽度（和 display_draw_string_32() 配套）。
+  */
+uint16_t display_string_width_32(const char *text);
+
+/**
   * @brief  发送单条命令
   * @param  cmd: ST7735S 命令
   * @retval none

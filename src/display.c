@@ -936,6 +936,100 @@ void display_draw_string(uint16_t x, uint16_t y, const char *text,
   }
 }
 
+/* ---- 1.5 倍文本 ----
+ * 这套点阵是 3 列 x 5 行、前进 4*scale，整数倍放大只有 1 倍（3x5，前进 4）和
+ * 2 倍（6x10，前进 8）两档：1 倍在 160x80 上偏小看不清，2 倍一行放不下
+ * "标签 + 数值"、菜单 5 行也会掉到 3 行。
+ * 1.5 倍用源像素到输出像素的非整数映射做：
+ *   列 3 源列 -> 5 输出像素，映射表 {0,0,1,2,2}（左右两列各多铺一个像素，看着对称）
+ *   行 5 源行 -> 8 输出像素，sy = oy * 5 / 8（单调覆盖 0..4）
+ * 字形占 5x8，前进 6 像素（5 + 1 间隔），行高按 11 算，菜单一屏还是 5 行。 */
+static const uint8_t display_scale32_col[5] = { 0U, 0U, 1U, 2U, 2U };
+
+#define DISPLAY_SCALE32_W         (5U)
+#define DISPLAY_SCALE32_H         (8U)
+#define DISPLAY_SCALE32_ADVANCE   (6U)
+
+static void display_draw_char_32(uint16_t x, uint16_t y, char ch,
+                                 uint16_t fg, uint16_t bg)
+{
+  const display_glyph_t *glyph;
+  uint16_t oy;
+  uint16_t ox;
+  uint8_t bits;
+
+  if(display_initialized == 0U)
+  {
+    return;
+  }
+
+  glyph = display_find_glyph(ch);
+  fg = display_theme_color(fg);
+  bg = display_theme_color(bg);
+
+  for(oy = 0U; oy < DISPLAY_SCALE32_H; oy++)
+  {
+    /* 8 个输出行铺回 5 个源行 */
+    bits = glyph->rows[(uint8_t)((oy * 5U) / DISPLAY_SCALE32_H)];
+
+    for(ox = 0U; ox < DISPLAY_SCALE32_W; ox++)
+    {
+      if(((uint16_t)(x + ox) >= DISPLAY_WIDTH) ||
+         ((uint16_t)(y + oy) >= DISPLAY_HEIGHT))
+      {
+        continue;
+      }
+
+      if((bits & (uint8_t)(1U << (2U - display_scale32_col[ox]))) != 0U)
+      {
+        display_draw_pixel((uint16_t)(x + ox), (uint16_t)(y + oy), fg);
+      }
+      else
+      {
+        display_draw_pixel((uint16_t)(x + ox), (uint16_t)(y + oy), bg);
+      }
+    }
+  }
+}
+
+void display_draw_string_32(uint16_t x, uint16_t y, const char *text,
+                            uint16_t fg, uint16_t bg)
+{
+  if((display_initialized == 0U) || (text == NULL))
+  {
+    return;
+  }
+
+  while(*text != '\0')
+  {
+    display_draw_char_32(x, y, *text, fg, bg);
+    x = (uint16_t)(x + DISPLAY_SCALE32_ADVANCE);
+    text++;
+  }
+}
+
+uint16_t display_string_width_32(const char *text)
+{
+  uint16_t count = 0U;
+
+  if(text == NULL)
+  {
+    return 0U;
+  }
+
+  while(text[count] != '\0')
+  {
+    count++;
+  }
+
+  if(count == 0U)
+  {
+    return 0U;
+  }
+
+  return (uint16_t)((count * DISPLAY_SCALE32_ADVANCE) - 1U);
+}
+
 void display_draw_char_transparent(uint16_t x, uint16_t y, char ch,
                                    uint16_t fg, uint8_t scale)
 {
