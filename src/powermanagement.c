@@ -135,6 +135,9 @@ static uint8_t power_read_vibration_level(void);
 #define POWER_CH224A_DEBUG              (1U)
 
 #if POWER_CH224A_DEBUG
+/* 上一次打出来的输入电压，用来判断"跳了一档没有" */
+static uint16_t power_dbg_last_mv;
+
 static void power_dbg_char(char c)
 {
   uint32_t guard = 200000U;
@@ -1808,6 +1811,34 @@ static void power_voltage_task(uint32_t now_ms)
   /* 休眠计时只由震动/按键等活动输入重置，不再根据功率或温度误差推断使用状态 */
 
   power_voltage_mv = power_vin_raw_to_mv(status.vin_raw);
+
+#if POWER_CH224A_DEBUG
+  /* 输入电压跳一档就打一行，带上当时的目标档、状态机状态、芯片在不在线。
+   * 以后再遇到"电压自己掉了"，一眼能分清是我们写 0x0A 写的，还是供电方退档 /
+   * CH224A 掉回 CFG 默认档：want 和 act 没变却掉档，就是外面干的。 */
+  {
+    int32_t dv = (int32_t)power_voltage_mv - (int32_t)power_dbg_last_mv;
+
+    if((dv >= 500) || (dv <= -500))
+    {
+      POWER_DBG("\r\n[pd] vbus ");
+      POWER_DBG_DEC(power_dbg_last_mv);
+      POWER_DBG("->");
+      POWER_DBG_DEC(power_voltage_mv);
+      POWER_DBG(" want=");
+      POWER_DBG_DEC(power_ch224a_target_index);
+      POWER_DBG(" act=");
+      POWER_DBG_DEC(power_pd_action);
+      POWER_DBG(" found=");
+      POWER_DBG_DEC(power_ch224a_found);
+      POWER_DBG(" st=0x");
+      POWER_DBG_HEX(power_ch224a_status);
+      POWER_DBG("\r\n");
+
+      power_dbg_last_mv = power_voltage_mv;
+    }
+  }
+#endif
 
   /* 上电/CH224A 重新协商期间不触发保护 */
   if(now_ms < POWER_VOLTAGE_STARTUP_GRACE_MS)
