@@ -210,6 +210,13 @@ static const menu_item_t menu_sleep_items[] =
 
 static const menu_item_t menu_power_service_items[] =
 {
+  /* 这一页就是从欠压故障界面长按 MENU 进来的那个"受限电源设置"，所以 PD VOLT 放
+     第一条：供电顶不住报欠压的时候，第一件要改的事就是"换个档位，或者交给 AUTO
+     自己去挑这颗头能给到哪一档"。
+     和 SLEEP / POWER 页里那条是同一个变量（menu_config.ch224a_index），改哪边都
+     一样：主循环里的 power_pd_slot_task() 每拍都在跟，改完立刻交给 watchdog 去重谈，
+     不用退出菜单、也不用重启。 */
+  { "PD VOLT",   MENU_ITEM_ENUM,  &menu_config.ch224a_index, NULL, menu_pd_volt_options, 3U, 1.0f, 0.0f, 2.0f, 0U, "", NULL },
   { "LOW VOLT",  MENU_ITEM_FLOAT, &menu_config.low_voltage_v, NULL, NULL, 0, 0.5f,  5.0f,  30.0f,  1U, "V", NULL },
   { "MAX POWER", MENU_ITEM_FLOAT, &menu_config.max_power_pct, NULL, NULL, 0, 5.0f, 10.0f, 100.0f, 0U, "%", NULL },
   { "BACK",       MENU_ITEM_ACTION, NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_back },
