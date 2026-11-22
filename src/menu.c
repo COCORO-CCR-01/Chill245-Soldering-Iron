@@ -1203,6 +1203,13 @@ static float menu_item_step(const menu_item_t *item)
     return onekeyboost_get_setpoint_step();
   }
 
+  /* BOOT LOGO 只有 0..10 秒，跟着 TIME STEP（默认 5）走就只有 0/5/10 三档，太粗。
+   * 这一项固定按 1 秒步进。 */
+  if(item->value == &menu_config.bootlogo_delay_s)
+  {
+    return 1.0f;
+  }
+
   /* 秒级时间项使用 TIME STEP */
   if((item->unit != NULL) && (strcmp(item->unit, "s") == 0))
   {
