@@ -21,6 +21,7 @@
 #include "version.h"
 #include "bootguard.h"
 #include "statemachine.h"
+#include "heater.h"
 #include "pid.h"
 #include "temp.h"
 #include "verifyheater.h"
@@ -159,6 +160,7 @@ static void menu_action_autotune(void);
 static void menu_action_cancel_autotune(void);
 static void menu_action_clear_fault(void);
 static void menu_action_heater_toggle(void);
+static void menu_action_stop_heat(void);
 static void menu_action_hms(void);
 static void menu_action_defaults(void);
 static void menu_action_tip_cal(void);
@@ -308,6 +310,7 @@ static const menu_page_t menu_page_system =
 
 static const menu_item_t menu_root_items[] =
 {
+  { "STOP HEAT",     MENU_ITEM_ACTION,  NULL, NULL, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", menu_action_stop_heat },
   { "TEMPERATURE",   MENU_ITEM_SUBMENU, NULL, &menu_page_temperature, NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "BOOST",         MENU_ITEM_SUBMENU, NULL, &menu_page_boost,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
   { "SLEEP / POWER", MENU_ITEM_SUBMENU, NULL, &menu_page_sleep,       NULL, 0, 0.0f, 0.0f, 0.0f, 0U, "", NULL },
@@ -980,6 +983,24 @@ static void menu_action_heater_toggle(void)
 {
   (void)sm_set_heater_enabled((sm_is_heater_enabled() != 0U) ? 0U : 1U);
   menu_need_draw = 1U;
+}
+
+/* 停止加热：给用户的"立刻停下"。放在菜单第一页第一条，闭着眼也能按到。
+ *
+ * 和 PROTECTION / SYSTEM 页里的 HEATER ON/OFF 的区别是方向：那个是开关，手抖多按
+ * 一下就可能反过来把加热打开；这个只做"关"，按多少次都还是停 —— 作为保护动作，
+ * 方向必须唯一，不能因为连点变成反向操作。
+ *
+ * 关完直接退出菜单，回到主界面好让人盯着温度往下掉；heater_force_off() 是硬关
+ * PWM，不等下一个控制周期，响应快一拍。
+ *
+ * 恢复加热：回主界面按任意键（main.c 里的手动恢复路径），或者长按 PREV。 */
+static void menu_action_stop_heat(void)
+{
+  (void)sm_set_heater_enabled(0U);
+  heater_force_off();
+  buzzer_play(BUZZER_SOUND_KEY);
+  menu_close();
 }
 
 static void menu_action_hms(void)
