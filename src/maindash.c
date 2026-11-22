@@ -446,6 +446,7 @@ static void maindash_classic_draw(const sm_status_t *status, uint32_t now_ms)
 #define CL_DIRTY_BOTTOM_SECONDS (1U << 5)   /* 只有 SLEEP 倒计时秒数变了 */
 #define CL_DIRTY_BOTTOM_VIB     (1U << 6)   /* 只有震动指示点变了 */
 #define CL_DIRTY_RIGHT_VALUE    (1U << 7)   /* 右侧块只有数值变、页码没变 */
+#define CL_DIRTY_TOP_POWER      (1U << 8)   /* 顶栏只有功率变，走增量不重铺整条 */
 
 static int cl_last_tip = -1;
 static int cl_last_power = -1;
@@ -467,6 +468,124 @@ static int cl_last_right_b = -1;
  * 来回抖动的值永远过不了这道闸。 */
 static int cl_pend_right_a = -1;
 static int cl_pend_right_b = -1;
+
+/* maindash_patch_bg 定义在后面（底栏那一段前面），这里先声明给顶栏增量用 */
+static void maindash_patch_bg(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
+/* 顶栏增量刷新用到的两个几何缓存：功率条宽度和百分比数字的像素宽。
+ * 整页重绘和增量两条路最后都会走到 cache 段，屏上画的就是这两个值推出来的内容。 */
+static uint16_t cl_last_fill_width;
+static uint8_t cl_last_percent_w;
+
+/* 把一段矩形铺成"功率条以内是粉色、条以外是背景"。
+ * 用它代替整条 160x12 的 wallpaper_blit，一次重绘从 3840 字节降到几十~几百字节。 */
+static void maindash_top_patch_span(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                    uint16_t fill_width)
+{
+  uint16_t pink_w;
+
+  maindash_patch_bg(x, y, w, h);
+
+  if((w != 0U) && (fill_width > x))
+  {
+    pink_w = (uint16_t)(fill_width - x);
+    if(pink_w > w)
+    {
+      pink_w = w;
+    }
+
+    display_fill_rect(x, y, pink_w, h, UI_PINK);
+  }
+}
+
+/* 只有功率变了的时候走这里。
+ *
+ * 原来每次功率百分比变化都是：wallpaper_blit 重铺整条 160x12（3840 字节）+ Chill245
+ * + 状态字 + 百分比三段文字全部重画，合计约 9.5KB ≈ 8ms SPI，期间顶栏是"先空一下
+ * 再画回来"。加热时功率百分比一直在变，顶部右侧就跟着一直闪。
+ *
+ * 改成只动三处：
+ *   1) 旧宽度到新宽度之间的那几列；
+ *   2) 被这几列扫到的字 —— 功率条会从字底下扫过去，字在条内是粉底、条外是黑底，
+ *      底色必须跟着变，所以只有真的压到字才重画那个字，没扫到一个像素不动；
+ *   3) 右上角的百分比数字（内容变了必须画；擦除取新旧位置并集，位数变化不留尾巴）。 */
+static void maindash_classic_top_power_draw(const sm_status_t *status)
+{
+  uint16_t new_fill;
+  uint16_t lo;
+  uint16_t hi;
+  const char *top_state;
+  uint16_t top_color;
+  uint16_t brand_end;
+  uint16_t state_end;
+  char text[20];
+  uint16_t w;
+  uint16_t x;
+  uint16_t ex;
+  uint16_t old_x;
+
+  new_fill = (uint16_t)(((uint16_t)status->power * 160U) / 100U);
+  top_state = maindash_top_state(status, &top_color);
+
+  if(new_fill != cl_last_fill_width)
+  {
+    if(new_fill < cl_last_fill_width)
+    {
+      lo = new_fill;
+      hi = cl_last_fill_width;
+    }
+    else
+    {
+      lo = cl_last_fill_width;
+      hi = new_fill;
+    }
+
+    maindash_top_patch_span(lo, 0U, (uint16_t)(hi - lo), 12U, new_fill);
+
+    /* 条的边界扫过字底下才重画那个字，顺便把底色改对 */
+    brand_end = (uint16_t)(2U + display_string_width("Chill245", 2U));
+    if(lo < brand_end)
+    {
+      maindash_classic_top_text(2U, 1U, "Chill245", 2U, UI_WHITE, new_fill);
+    }
+
+    state_end = (uint16_t)(80U + display_string_width(top_state, 2U));
+    if((hi > 80U) && (lo < state_end))
+    {
+      maindash_classic_top_text(80U, 1U, top_state, 2U, top_color, new_fill);
+    }
+  }
+  else
+  {
+    state_end = (uint16_t)(80U + display_string_width(top_state, 2U));
+  }
+
+  /* 百分比数字：右对齐到 158，位置随字宽走，所以擦除要盖住新旧两个位置 */
+  fmt_snprintf(text, sizeof(text), "%u%%", (unsigned)status->power);
+  w = (uint16_t)display_string_width(text, 2U);
+  x = (uint16_t)(158U - w);
+  ex = x;
+
+  if(cl_last_percent_w != 0U)
+  {
+    old_x = (uint16_t)(158U - (uint16_t)cl_last_percent_w);
+    if(old_x < ex)
+    {
+      ex = old_x;
+    }
+  }
+
+  maindash_top_patch_span(ex, 1U, (uint16_t)(158U - ex), 10U, new_fill);
+
+  /* 状态字比较长的时候会一直伸到百分比这一带来，擦百分比会削掉它的尾巴。整页重绘的
+   * 顺序是"先状态字后百分比"，这里保持一致：有重叠就把状态字补回来再画百分比。 */
+  if(state_end > ex)
+  {
+    maindash_classic_top_text(80U, 1U, top_state, 2U, top_color, new_fill);
+  }
+
+  maindash_classic_top_text(x, 1U, text, 2U, UI_WHITE, new_fill);
+}
 
 static void maindash_classic_top_draw(const sm_status_t *status)
 {
@@ -688,6 +807,10 @@ static void maindash_classic_partial(const sm_status_t *status, uint32_t now_ms,
   {
     maindash_classic_top_draw(status);
   }
+  else if((mask & CL_DIRTY_TOP_POWER) != 0U)
+  {
+    maindash_classic_top_power_draw(status);
+  }
   if((mask & CL_DIRTY_TEMP) != 0U)
   {
     maindash_classic_temp_draw(status, now_ms);
@@ -770,17 +893,17 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
   {
     mask |= CL_DIRTY_TEMP;
   }
-  if((int)status->power != cl_last_power)
+  /* 顶栏分两档：状态字（连同颜色）变了走整条重画；只有功率变了走增量 ——
+   * 只补"旧宽度到新宽度那几列 + 右上角百分比"，不再重铺整条 160x12 背景
+   * （3840 字节）+ 三段文字全部重画（合计约 9.5KB ≈ 8ms SPI）。加热时功率百分比
+   * 一直在变，那一档以前每次都是整条"先空一下再画回来"，顶部右侧就跟着闪。 */
+  if(top_state != cl_last_top)
   {
     mask |= CL_DIRTY_TOP | CL_DIRTY_PROGRESS;
   }
-  /* 顶栏内容是功率条 + Chill245 + 状态字 + 百分比，和右侧轮播的页码无关。原来这里
-   * || 了一个 (pair != cl_last_pair)，等于每 2 秒白刷一整条顶栏（wallpaper_blit
-   * 重铺 160x12 + 三段文字），也是闪烁来源之一，去掉；功率百分比变化上面已经会标
-   * CL_DIRTY_TOP，不会漏掉。 */
-  if(top_state != cl_last_top)
+  else if((int)status->power != cl_last_power)
   {
-    mask |= CL_DIRTY_TOP;
+    mask |= CL_DIRTY_TOP_POWER | CL_DIRTY_PROGRESS;
   }
   /* 底栏分字段判脏：状态文字（连同图标、颜色）变了才重铺整条；只有倒计时或只有
    * 震动点变了，就各补自己那一小块。SLEEP 倒计时每秒都变，以前每秒重铺整条底栏
@@ -843,6 +966,16 @@ static void maindash_classic_update(const sm_status_t *status, uint32_t now_ms)
 cache:
   cl_last_tip = tip_c;
   cl_last_power = (int)status->power;
+
+  /* 顶栏增量刷新的两个几何缓存：屏上此刻的功率条宽度和百分比数字像素宽。整页重绘
+   * 和增量两条路都收在这里，所以这两个值始终等于屏上真实画出来的内容。 */
+  cl_last_fill_width = (uint16_t)(((uint16_t)status->power * 160U) / 100U);
+  {
+    char percent[12];
+
+    fmt_snprintf(percent, sizeof(percent), "%u%%", (unsigned)status->power);
+    cl_last_percent_w = (uint8_t)display_string_width(percent, 2U);
+  }
   cl_last_set = show_set;
   cl_last_valid = status->temp_valid;
   cl_last_right_pair = pair;
