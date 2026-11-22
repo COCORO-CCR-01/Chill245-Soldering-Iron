@@ -111,6 +111,20 @@ static uint32_t power_pd_bad_since_ms;
 static uint32_t power_pd_step_ms;
 static uint8_t power_pd_attempts;
 
+/* AUTO 档：解析能力表有代价（48×2 次单字节读），不能每拍都做；没解析出来时每隔
+ * POWER_PD_AUTO_RETRY_MS 再试一次，试满 POWER_PD_AUTO_MAX_TRIES 次就按当前上限要档。 */
+#define POWER_PD_AUTO_RETRY_MS          (1000U)
+#define POWER_PD_AUTO_MAX_TRIES         (3U)
+
+/* VBUS 掉到这个值以下：连 5V 默认档都撑不住，是供电方被我们拉得重启了（过流保护
+ * 或者软启动失败），不用等 1.5 s 容错计时，立刻降档。 */
+#define POWER_PD_COLLAPSE_MV            (4500U)
+
+static uint8_t power_pd_auto_index = POWER_PD_INDEX_NONE;  /* AUTO 当前要的档位 */
+static uint8_t power_pd_auto_cap = POWER_CH224A_INDEX_20V; /* 允许的最高档，失败就压 */
+static uint8_t power_pd_auto_tries;
+static uint32_t power_pd_auto_step_ms;
+
 static uint8_t power_read_vibration_level(void);
 
 /* ---------------------------------------------------------------------------
@@ -750,8 +764,8 @@ uint8_t power_ch224a_negotiate(float volts)
  * 非阻塞：每个 tick 最多做一件事，正常情况只是比较一次电压。
  * 5V 档不纠偏：CFG1=205k 单电阻模式没有 5V 配置，写 0 芯片会保持默认档，
  * 纠偏只会白白打断合同。 */
-#if POWER_CH224A_DEBUG
-/* 适配器 Source_Capabilities 解码，只在调试打印打开时编译，生产固件一个字节都不占。
+/* 适配器 Source_Capabilities 读取与解码。AUTO 档要靠它挑出这颗供电能给的最高档，
+ * 所以生产固件里也要编译，不再是调试打印专用。
  *
  * 0x60~0x8F 官方手册只写了两句话：只读、装的是适配器发来的 SRCCAP（EPR 模式下是
  * EPR_SRCCAP）原始数据，内部怎么排布官方没写。社区三份独立实现（M5Stack-CH224x-PPS、
@@ -765,23 +779,12 @@ uint8_t power_ch224a_negotiate(float volts)
  *
  * CH224A 不支持连续读，只能一个寄存器一个寄存器读；读的过程中 PD 引擎还可能刷新
  * 这个缓冲，所以整块读两遍，两遍一致的字节才当可信，不一致的抹零并计数报出来。 */
-static void power_pd_dbg_hex32(uint32_t value)
+static uint8_t power_ch224a_read_caps(uint8_t *data, uint8_t *out_ndo, uint8_t *bad_out)
 {
-  POWER_DBG_HEX((uint8_t)(value >> 24));
-  POWER_DBG_HEX((uint8_t)(value >> 16));
-  POWER_DBG_HEX((uint8_t)(value >> 8));
-  POWER_DBG_HEX((uint8_t)value);
-}
-
-
-static void power_pd_dump_caps(void)
-{
-  uint8_t data[POWER_CH224A_CAP_COUNT];
   uint8_t again;
   uint8_t bad;
   uint8_t i;
   uint16_t head;
-  uint8_t ndo;
 
   bad = 0U;
 
@@ -789,11 +792,7 @@ static void power_pd_dump_caps(void)
   {
     if(power_ch224a_read_reg((uint8_t)(POWER_CH224A_REG_CAP_BASE + i), &data[i]) == 0U)
     {
-      POWER_DBG("\r\n[pd] cap fail@0x");
-      POWER_DBG_HEX((uint8_t)(POWER_CH224A_REG_CAP_BASE + i));
-      POWER_DBG("\r\n");
-
-      return;
+      return 0U;
     }
   }
 
@@ -809,8 +808,105 @@ static void power_pd_dump_caps(void)
     }
   }
 
+  if(bad_out != NULL)
+  {
+    *bad_out = bad;
+  }
+
   head = (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
-  ndo = (uint8_t)((head >> 12) & 0x07U);
+
+  /* 消息类型必须是 1 = Source_Capabilities，否则这块缓冲现在装的不是能力表
+   * （刚拔插、或者 PD 引擎正在写别的报文），当读失败处理，别拿脏数据去挑档。 */
+  if((head & 0x1FU) != 0x01U)
+  {
+    return 0U;
+  }
+
+  *out_ndo = (uint8_t)((head >> 12) & 0x07U);
+
+  return (*out_ndo != 0U) ? 1U : 0U;
+}
+
+
+/* 这颗供电方能给的最高 Fixed 档，换算成 CH224A 电压索引；读不到或者认不出档，
+ * 返回 POWER_PD_INDEX_NONE 让调用方去走退路。
+ * 只认 Fixed Supply（B31:30=00）：PPS / 电池档整机用不上，0x0A 那个索引寄存器本来
+ * 也只对应固定档。 */
+static uint8_t power_ch224a_max_index_from_caps(void)
+{
+  /* 和下标就是 POWER_CH224A_INDEX_5V..20V 对齐的标称电压 */
+  static const uint16_t nominal[5] = {5000U, 9000U, 12000U, 15000U, 20000U};
+  uint8_t data[POWER_CH224A_CAP_COUNT];
+  uint8_t ndo;
+  uint8_t best;
+  uint8_t i;
+  uint8_t k;
+
+  if(power_ch224a_read_caps(data, &ndo, NULL) == 0U)
+  {
+    return POWER_PD_INDEX_NONE;
+  }
+
+  best = POWER_PD_INDEX_NONE;
+
+  for(i = 0U; i < ndo; i++)
+  {
+    uint32_t pdo;
+    uint16_t mv;
+
+    pdo = (uint32_t)data[2U + (i * 4U)]
+        | ((uint32_t)data[3U + (i * 4U)] << 8)
+        | ((uint32_t)data[4U + (i * 4U)] << 16)
+        | ((uint32_t)data[5U + (i * 4U)] << 24);
+
+    if(((pdo >> 30) & 0x03U) != 0x00U)
+    {
+      continue;
+    }
+
+    mv = (uint16_t)(((pdo >> 10) & 0x3FFU) * 50U);
+
+    for(k = 0U; k < 5U; k++)
+    {
+      /* 放 ±0.5V 余量：有的头把 20V 标成 19.9V 或 20.1V，档还是那一档 */
+      if((mv + 500U >= nominal[k]) && (mv <= (uint16_t)(nominal[k] + 500U))
+         && ((best == POWER_PD_INDEX_NONE) || (k > best)))
+      {
+        best = k;
+      }
+    }
+  }
+
+  return best;
+}
+
+
+#if POWER_CH224A_DEBUG
+static void power_pd_dbg_hex32(uint32_t value)
+{
+  POWER_DBG_HEX((uint8_t)(value >> 24));
+  POWER_DBG_HEX((uint8_t)(value >> 16));
+  POWER_DBG_HEX((uint8_t)(value >> 8));
+  POWER_DBG_HEX((uint8_t)value);
+}
+
+
+static void power_pd_dump_caps(void)
+{
+  uint8_t data[POWER_CH224A_CAP_COUNT];
+  uint8_t bad;
+  uint8_t i;
+  uint16_t head;
+  uint8_t ndo;
+
+  if(power_ch224a_read_caps(data, &ndo, &bad) == 0U)
+  {
+    POWER_DBG("\r\n[pd] cap read fail\r\n");
+
+    return;
+  }
+
+  head = (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
 
   POWER_DBG("\r\n[pd] cap hdr=");
   POWER_DBG_HEX((uint8_t)(head >> 8));
@@ -876,16 +972,111 @@ static void power_pd_dump_caps(void)
 #endif
 
 
-/* 菜单里给的 PD 档位索引。可选项是 0..4（5/9/12/15/20V），28V（索引 5）不给选，
- * 但老参数里可能残留 5，越界一律按 20V 处理，别让固件去要一个整机没设计的电压。 */
-static uint8_t power_pd_slot_sanitize(uint8_t slot)
+/* 菜单存的是 PD VOLT 的“选项号”：0 = AUTO，1..5 = 5/9/12/15/20V。
+ * 老参数里可能残留越界值，一律退回 AUTO，别让固件去要一个整机没设计的电压。 */
+static uint8_t power_pd_option_sanitize(uint8_t option)
 {
-  if(slot > (uint8_t)POWER_CH224A_INDEX_20V)
+  if(option >= POWER_PD_OPTION_COUNT)
   {
-    return (uint8_t)POWER_CH224A_INDEX_20V;
+    return POWER_PD_OPTION_AUTO;
   }
 
-  return slot;
+  return option;
+}
+
+
+/* 选项号 -> CH224A 0x0A 的电压索引。AUTO 没有固定索引，返回 POWER_PD_INDEX_NONE，
+ * 由 power_pd_auto_resolve() 去问适配器。 */
+static uint8_t power_pd_option_to_index(uint8_t option)
+{
+  if(option == POWER_PD_OPTION_AUTO)
+  {
+    return POWER_PD_INDEX_NONE;
+  }
+
+  return (uint8_t)(option - 1U);
+}
+
+
+/* AUTO：问适配器它能给哪几档，取最高的那一档，并且不许超过当前上限
+ * power_pd_auto_cap —— 那个上限就是“谈不下来 / 把电源拉重启”之后一步步压下来的值。 */
+static void power_pd_auto_resolve(uint32_t now_ms)
+{
+  uint8_t idx;
+
+  if(power_pd_auto_index != POWER_PD_INDEX_NONE)
+  {
+    return;
+  }
+
+  if((power_pd_auto_tries != 0U)
+     && ((uint32_t)(now_ms - power_pd_auto_step_ms) < POWER_PD_AUTO_RETRY_MS))
+  {
+    return;
+  }
+
+  power_pd_auto_tries++;
+  power_pd_auto_step_ms = now_ms;
+
+  idx = power_ch224a_max_index_from_caps();
+
+  if(idx == POWER_PD_INDEX_NONE)
+  {
+    /* 读不出能力表：可能这颗根本不是 PD 源（纯 QC/DC 头），也可能缓冲一直没稳定。
+     * 试满次数就不再等，直接按上限要档，谈不成自然有 watchdog 一层层往下退。 */
+    if(power_pd_auto_tries >= POWER_PD_AUTO_MAX_TRIES)
+    {
+      power_pd_auto_index = power_pd_auto_cap;
+
+      POWER_DBG("\r\n[pd] auto no caps -> idx=");
+      POWER_DBG_DEC(power_pd_auto_index);
+      POWER_DBG("\r\n");
+    }
+
+    return;
+  }
+
+  if(idx > power_pd_auto_cap)
+  {
+    idx = power_pd_auto_cap;
+  }
+
+  power_pd_auto_index = idx;
+
+  POWER_DBG("\r\n[pd] auto top idx=");
+  POWER_DBG_DEC(idx);
+  POWER_DBG("\r\n");
+}
+
+
+/* AUTO 退一档：这一档谈不下来，或者把供电方拉得掉压重启了，就往下退一档重来，
+ * 最低退到 5V。退完还是不行的话，5V 档 watchdog 本来就不纠偏，不会再占总线。 */
+static void power_pd_auto_step_down(uint32_t now_ms, const char *why)
+{
+  (void)why;
+
+  if(power_pd_auto_index == POWER_PD_INDEX_NONE)
+  {
+    power_pd_auto_index = power_pd_auto_cap;
+  }
+
+  if(power_pd_auto_index > POWER_CH224A_INDEX_5V)
+  {
+    power_pd_auto_index--;
+    power_pd_auto_cap = power_pd_auto_index;
+
+    POWER_DBG("\r\n[pd] auto down(");
+    POWER_DBG(why);
+    POWER_DBG(") -> idx=");
+    POWER_DBG_DEC(power_pd_auto_index);
+    POWER_DBG("\r\n");
+  }
+
+  power_ch224a_target_index = power_pd_auto_index;
+  power_pd_action = POWER_PD_MONITOR;
+  power_pd_bad_since_ms = 0U;
+  power_pd_attempts = 0U;
+  power_pd_step_ms = now_ms;
 }
 
 
@@ -896,9 +1087,32 @@ static uint8_t power_pd_slot_sanitize(uint8_t slot)
  * 对 5V 也不纠偏，所以不会出现反复重试。 */
 static void power_pd_slot_task(uint32_t now_ms)
 {
+  uint8_t option;
   uint8_t slot;
 
-  slot = power_pd_slot_sanitize(g_eeprom_params.ch224a_index);
+  option = power_pd_option_sanitize(g_eeprom_params.ch224a_index);
+
+  if(option == POWER_PD_OPTION_AUTO)
+  {
+    /* AUTO：每拍只问一次“解析好了没有”，真正的解析在 resolve 里按时间片限流 */
+    power_pd_auto_resolve(now_ms);
+    slot = (power_pd_auto_index != POWER_PD_INDEX_NONE)
+         ? power_pd_auto_index
+         : power_pd_auto_cap;
+  }
+  else
+  {
+    /* 手动档：把 AUTO 状态整个清掉，下次切回 AUTO 时重新解析、重新从最高档试起 */
+    if(power_pd_auto_index != POWER_PD_INDEX_NONE)
+    {
+      power_pd_auto_index = POWER_PD_INDEX_NONE;
+      power_pd_auto_tries = 0U;
+      power_pd_auto_cap = POWER_CH224A_INDEX_20V;
+    }
+
+    slot = power_pd_option_to_index(option);
+  }
+
   if(slot == power_ch224a_target_index)
   {
     return;
@@ -959,6 +1173,18 @@ static void power_pd_watchdog(uint32_t now_ms)
   switch(power_pd_action)
   {
     case POWER_PD_MONITOR:
+
+      /* VBUS 掉到 5V 以下，而芯片还在应答 I2C（线还插着，不是被拔掉了）：这是供电方
+       * 被我们拽重启了。不排队等 1.5 s 容错计时，AUTO 马上退一档重来。
+       * 只在 MONITOR 里判：换档过程中本来就会抖，那会儿在 COMMIT / REQUEST 状态。 */
+      if((index != POWER_CH224A_INDEX_5V) && (power_voltage_mv != 0U)
+         && (power_voltage_mv < POWER_PD_COLLAPSE_MV)
+         && (power_pd_option_sanitize(g_eeprom_params.ch224a_index) == POWER_PD_OPTION_AUTO))
+      {
+        power_pd_auto_step_down(now_ms, "supply reset");
+
+        break;
+      }
 
       if(power_vin_matches_index(index) == 0U)
       {
@@ -1040,16 +1266,24 @@ static void power_pd_watchdog(uint32_t now_ms)
 
           if(power_pd_attempts >= POWER_PD_MAX_ATTEMPTS)
           {
-            /* 这个供电方大概率没有这一档，退到后台，隔一段时间再试 */
-            power_pd_step_ms = now_ms;
-            power_pd_action = POWER_PD_GIVE_UP;
-            POWER_DBG("\r\n[pd] wd GIVEUP idx=");
-            POWER_DBG_DEC(index);
-            POWER_DBG(" st=0x");
-            POWER_DBG_HEX(power_ch224a_status);
-            POWER_DBG(" mv=");
-            POWER_DBG_DEC(power_voltage_mv);
-            POWER_DBG("\r\n");
+            if(power_pd_option_sanitize(g_eeprom_params.ch224a_index) == POWER_PD_OPTION_AUTO)
+            {
+              /* AUTO：这颗供电给不出这一档，直接往下退一档，不用趴 15 s 退避 */
+              power_pd_auto_step_down(now_ms, "no slot");
+            }
+            else
+            {
+              /* 手动档：这个供电方大概率没有这一档，退到后台，隔一段时间再试 */
+              power_pd_step_ms = now_ms;
+              power_pd_action = POWER_PD_GIVE_UP;
+              POWER_DBG("\r\n[pd] wd GIVEUP idx=");
+              POWER_DBG_DEC(index);
+              POWER_DBG(" st=0x");
+              POWER_DBG_HEX(power_ch224a_status);
+              POWER_DBG(" mv=");
+              POWER_DBG_DEC(power_voltage_mv);
+              POWER_DBG("\r\n");
+            }
           }
           else if(power_ch224a_write_reg(power_ch224a_address,
                                          POWER_CH224A_REG_VOLTAGE,
@@ -1634,7 +1868,18 @@ void power_init(void)
   power_ch224a_address = POWER_CH224A_I2C_ADDR_PRIMARY;
   power_ch224a_voltage_v = POWER_CH224A_DEFAULT_VOLTAGE_V;
   power_ch224a_status = 0U;
-  power_ch224a_target_index = power_pd_slot_sanitize(g_eeprom_params.ch224a_index);
+  /* 菜单存的是 PD VOLT 选项号。AUTO 在 power_init 里解析不了（这时候 I2C 还没探过，
+   * 而且 power_init 跑在 eeprom_init 之前，参数都还没加载），先按 20V 起步，主循环
+   * 第一拍 power_pd_slot_task() 会照菜单值把它纠正过来。 */
+  power_pd_auto_index = POWER_PD_INDEX_NONE;
+  power_pd_auto_tries = 0U;
+  power_pd_auto_cap = POWER_CH224A_INDEX_20V;
+  power_ch224a_target_index = power_pd_option_to_index(power_pd_option_sanitize(g_eeprom_params.ch224a_index));
+
+  if(power_ch224a_target_index == POWER_PD_INDEX_NONE)
+  {
+    power_ch224a_target_index = POWER_CH224A_INDEX_20V;
+  }
   power_pd_action = POWER_PD_MONITOR;
   power_pd_bad_since_ms = 0U;
   power_pd_step_ms = 0U;
