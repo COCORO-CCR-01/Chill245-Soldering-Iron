@@ -917,6 +917,35 @@ static void menu_enter_item(void)
       {
         value = *(uint8_t *)item->value;
         *(uint8_t *)item->value = (value != 0U) ? 0U : 1U;
+
+        /* LIGHT MODE 切换必须立刻同步两套主题机制，否则会有"关掉 light mode 黑底还是
+         * 出现一块块白"的怪现象：
+         *
+         * display.c 里还有一套按字面色号硬映射的 display_theme_color()，里面
+         * case 0x0000: return 0xFFFF（黑底 -> 白），由 display_set_light_theme()
+         * 这个开关控制；appcolors 是另一套调色板主题。display_set_light_theme()
+         * 全项目只在 eeprom.c 加载参数时调过一次，菜单里 LIGHT MODE 是直接写
+         * menu_config.ui_light 的 BOOL 项，切完没人同步 —— 于是调色板已经是暗的，
+         * 面板级映射还停在 light，凡是用字面 0x0000 画的地方全被刷成白色。只有那
+         * 些地方会变，所以看到的是"部分白色"而不是整屏反色。
+         *
+         * 这里做的和 eeprom.c 加载参数时那几行完全一致（同一个顺序、同样的调用），
+         * 效果等于"按现在的 ui_light 重启一次"，不引入新语义。 */
+        if((const void *)item->value == (const void *)&menu_config.ui_light)
+        {
+          uint8_t light = *(uint8_t *)item->value;
+
+          display_set_light_theme(light);
+          appcolors_set(menu_config.app_colors);
+
+          if(light != 0U)
+          {
+            appcolors_apply_light_defaults();
+          }
+
+          autoroll_request_redraw();
+        }
+
         menu_need_draw = 1U;
       }
       break;
