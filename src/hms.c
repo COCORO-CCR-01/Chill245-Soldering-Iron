@@ -44,6 +44,8 @@ static hms_view_t hms_view;
 static uint32_t hms_view_until_ms;
 static uint8_t hms_menu_last;
 static uint8_t hms_menu_long_done;
+/* PREV / NEXT 的上一次状态：抬起的时候触发"重试" */
+static uint8_t hms_pair_last;
 static uint32_t hms_info_ms;
 
 static void hms_draw_center(const char *text, uint16_t y, uint16_t color,
@@ -214,14 +216,14 @@ static void hms_draw_fault_notice(void)
   }
 
   hms_draw_center(fault_text, 36U, HMS_YELLOW, 2U);
-  if(power_fault == POWER_FAULT_UNDERVOLTAGE)
-  {
-    hms_draw_center("MENU RETRY   HOLD MENU SETUP", 67U, HMS_GRAY, 1U);
-  }
-  else
-  {
-    hms_draw_center("PRESS MENU TO RETRY", 66U, HMS_GRAY, 2U);
-  }
+
+  /* 重试用 PREV / NEXT，MENU 专门留给"进设置"—— 主界面长按 MENU 也是进设置，
+     同一个键在哪个界面都是这个意思。以前重试是短按 MENU，用户想长按进设置时手稍微
+     松快一点就被当成短按重试掉，两个动作挤在一个键上。
+     （写 PREV/NEXT 而不是 -/+：这块点阵字库里没有 '+' 字形，只有 % - . / : 和
+     数字字母，印 + 会是个空格。） */
+  hms_draw_center("PREV/NEXT TO RETRY", 58U, HMS_GRAY, 1U);
+  hms_draw_center("HOLD MENU SETUP", 70U, HMS_GRAY, 1U);
 }
 
 static void hms_draw_eeprom_recovered(void)
@@ -342,6 +344,7 @@ uint8_t hms_task(uint32_t now_ms)
      (power_get_fault() != POWER_FAULT_NONE))
   {
     uint8_t menu_pressed;
+    uint8_t pair_pressed;
 
     if(hms_view != HMS_VIEW_FAULT)
     {
@@ -349,6 +352,10 @@ uint8_t hms_task(uint32_t now_ms)
       hms_drawn = 0U;
       hms_menu_last = buttons_is_pressed(BUTTON_MENU);
       hms_menu_long_done = 0U;
+      /* 刚进故障界面时如果手里正按着 PREV/NEXT，先记成"已经按下"，
+       * 免得画面一出来就直接被当成一次重试。 */
+      hms_pair_last = ((buttons_is_pressed(BUTTON_PREV) != 0U) ||
+                       (buttons_is_pressed(BUTTON_NEXT) != 0U)) ? 1U : 0U;
     }
 
     if((hms_drawn == 0U) ||
@@ -361,9 +368,9 @@ uint8_t hms_task(uint32_t now_ms)
 
     menu_pressed = buttons_is_pressed(BUTTON_MENU);
 
-    /* 输入欠压时，长按 MENU 进入受限电源设置，而不是直接重试。 */
-    if((power_get_fault() == POWER_FAULT_UNDERVOLTAGE) &&
-       (menu_pressed != 0U) &&
+    /* 长按 MENU：进设置（受限电源设置页）。所有故障都认这个手势，跟主界面
+     * "长按 MENU 进设置"一致；重试已经交给 PREV / NEXT，不再跟这个键抢。 */
+    if((menu_pressed != 0U) &&
        (buttons_get_press_duration(BUTTON_MENU, now_ms) >= 2000U) &&
        (hms_menu_long_done == 0U))
     {
@@ -372,21 +379,29 @@ uint8_t hms_task(uint32_t now_ms)
       return 1U;
     }
 
-    /* 短按 MENU 在释放时重试，避免长按被误判成短按。 */
+    /* MENU 抬起只清长按标记，让下一次长按重新计时；MENU 本身不再触发重试。 */
     if((menu_pressed == 0U) && (hms_menu_last != 0U))
     {
-      if(hms_menu_long_done == 0U)
-      {
-        (void)sm_clear_fault();
-        (void)power_clear_fault();
-        (void)sm_set_heater_enabled(1U);
-        hms_view = HMS_VIEW_NONE;
-        hms_drawn = 0U;
-        hms_menu_last = 0U;
-        return 0U;
-      }
       hms_menu_long_done = 0U;
     }
+
+    /* PREV / NEXT 在抬起时重试。跟原来 MENU 一样用抬起而不是按下：一是行为一致，
+     * 二是故障刚弹出来时用户手里要正好按着键，不会立刻被重试掉。 */
+    pair_pressed = ((buttons_is_pressed(BUTTON_PREV) != 0U) ||
+                    (buttons_is_pressed(BUTTON_NEXT) != 0U)) ? 1U : 0U;
+
+    if((pair_pressed == 0U) && (hms_pair_last != 0U))
+    {
+      (void)sm_clear_fault();
+      (void)power_clear_fault();
+      (void)sm_set_heater_enabled(1U);
+      hms_view = HMS_VIEW_NONE;
+      hms_drawn = 0U;
+      hms_pair_last = 0U;
+      return 0U;
+    }
+
+    hms_pair_last = pair_pressed;
 
     hms_menu_last = menu_pressed;
     return 1U;
