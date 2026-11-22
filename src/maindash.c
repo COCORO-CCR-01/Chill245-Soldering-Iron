@@ -668,35 +668,24 @@ static void maindash_classic_right_signature(const sm_status_t *status, uint8_t 
   }
 }
 
-/* 屏上此刻画的是哪一页（0xFF = 还没画过，第一次按换页处理） */
-static uint8_t cl_right_shown_pair = 0xFFU;
-
 static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_ms)
 {
   uint8_t pair;
-  uint8_t value_only;
   char value[20];
 
-  pair = (uint8_t)((now_ms / 2000U) & 1U);
-
-  /* 按元素擦，不再一次重铺整块 84x49（8232 字节）—— 那是右侧闪的主因：重铺期间
-   * 屏幕上是"先空一下再画回来"。
+  /* 整块重铺，不能改成按元素窄槽擦（a2f64ae 试过，已退回）。
    *
-   * 页码没变（只是数值跳了一格）：屏上标签和分割线都还是对的，只擦两个数值槽
-   * （104..160，各 56x16），约 3.6KB；
-   * 页码变了：两个标签槽（78..102，各 24x6）也得换，加上分割线，约 4.3KB。
-   * 槽位边界按字形算过：标签 1 倍字高 5、最宽 4 字符 16 像素，画在 x=78；数值
-   * 3 倍字高 15、最宽 5 字符 50 像素，画在 x=104，槽位留到屏边 160。 */
-  value_only = (pair == cl_right_shown_pair) ? 1U : 0U;
-
-  if(value_only == 0U)
-  {
-    maindash_patch_bg(78U, 20U, 24U, 6U);
-    maindash_patch_bg(78U, 43U, 24U, 6U);
-  }
-
-  maindash_patch_bg(104U, 15U, 56U, 16U);
-  maindash_patch_bg(104U, 38U, 56U, 16U);
+   * 右侧块的真实边界是 x 76..159、y 14..62：整屏绘制时左半边只铺到 x 0..73 /
+   * y 13..62，底栏从 y 64 起，中间这一整块归右侧轮播。a2f64ae 想按元素省字节，
+   * 只擦了标签槽（78..101 各 24x6）和数值槽（104..159 各 56x16），结果 x 76..77、
+   * y 31..37、y 54..62 以及标签四周那些行列全落在槽外的擦不到的死角，用户实测
+   * VIN / COLD 有上一次的色彩残留。
+   *
+   * 省字节的大头本来也不在这里：047a023 的"值变了才画"和 e925005 的防抖已经把
+   * 重画次数从每 500ms 一次降到真的变了才画，这里每次重画就是 8232 字节整块铺，
+   * 覆盖 100% 无死角，正确性优先。要再往下省，得先有办法证明哪一块绝对不会落墨。 */
+  wallpaper_blit(76U, 14U, 84U, 49U);
+  pair = (uint8_t)((now_ms / 2000U) & 1U);
 
   if(pair == 0U)
   {
@@ -726,9 +715,6 @@ static void maindash_classic_right_draw(const sm_status_t *status, uint32_t now_
     fmt_snprintf(value, sizeof(value), "%d.%dC", whole, frac);
     display_draw_string_transparent(104U, 38U, value, UI_WHITE, 3U);
   }
-
-  /* 记账：屏上此刻是这一页 */
-  cl_right_shown_pair = pair;
 }
 
 /* 只把"要重写的那一小块"背景铺好：有壁纸回填壁纸，没壁纸刷黑。
