@@ -1666,6 +1666,35 @@ static void power_latch_fault(power_fault_t fault, uint16_t voltage_mv)
   }
 }
 
+/* 欠压门限不能高过“当前档位的标称电压 - 余量”。
+ * 用户或者 AUTO 选了 9V / 5V 这种低档时，实测 VBUS 本来就在 13.5V 以下，照按 20V
+ * 定的阈值判会直接锁死在欠压故障里，连 clear 都清不掉。所以取两者里更低的：
+ * 20V 档（20000-1500 = 18500）时仍然照用户设的 13.5V 判，一点没放松。 */
+#define POWER_LOW_VOLTAGE_SLOT_MARGIN_MV        (1500U)
+
+static uint16_t power_effective_low_voltage_mv(void)
+{
+  uint16_t slot_mv;
+  uint16_t margin_mv;
+
+  if(power_ch224a_target_index > 5U)
+  {
+    return power_low_voltage_mv;
+  }
+
+  slot_mv = (uint16_t)power_ch224a_voltage_mv_table[power_ch224a_target_index];
+
+  if(slot_mv <= POWER_LOW_VOLTAGE_SLOT_MARGIN_MV)
+  {
+    return slot_mv;
+  }
+
+  margin_mv = (uint16_t)(slot_mv - POWER_LOW_VOLTAGE_SLOT_MARGIN_MV);
+
+  return (margin_mv < power_low_voltage_mv) ? margin_mv : power_low_voltage_mv;
+}
+
+
 uint8_t power_clear_fault(void)
 {
   uint8_t restore_heater;
@@ -1676,7 +1705,7 @@ uint8_t power_clear_fault(void)
   }
 
   if((power_voltage_mv <=
-      (uint16_t)(power_low_voltage_mv + power_voltage_hysteresis_mv)) ||
+      (uint16_t)(power_effective_low_voltage_mv() + power_voltage_hysteresis_mv)) ||
      (power_voltage_mv >=
       (uint16_t)(power_high_voltage_mv - power_voltage_hysteresis_mv)))
   {
@@ -1705,6 +1734,7 @@ uint8_t power_clear_fault(void)
 static void power_voltage_task(uint32_t now_ms)
 {
   sm_status_t status;
+  uint16_t low_mv;
 
   if((uint32_t)(now_ms - power_last_voltage_sample_ms) <
      POWER_VOLTAGE_SAMPLE_MS)
@@ -1735,9 +1765,11 @@ static void power_voltage_task(uint32_t now_ms)
     return;
   }
 
+  low_mv = power_effective_low_voltage_mv();
+
   if(power_fault == POWER_FAULT_NONE)
   {
-    if((power_voltage_mv < power_low_voltage_mv) ||
+    if((power_voltage_mv < low_mv) ||
        (power_voltage_mv > power_high_voltage_mv))
     {
       if(power_voltage_bad_since_ms == 0U)
@@ -1747,7 +1779,7 @@ static void power_voltage_task(uint32_t now_ms)
       else if((uint32_t)(now_ms - power_voltage_bad_since_ms) >=
               power_voltage_trip_ms)
       {
-        if(power_voltage_mv < power_low_voltage_mv)
+        if(power_voltage_mv < low_mv)
         {
           power_latch_fault(POWER_FAULT_UNDERVOLTAGE, power_voltage_mv);
         }
@@ -1765,7 +1797,7 @@ static void power_voltage_task(uint32_t now_ms)
   else
   {
     if((power_voltage_mv >
-        (uint16_t)(power_low_voltage_mv + power_voltage_hysteresis_mv)) &&
+        (uint16_t)(low_mv + power_voltage_hysteresis_mv)) &&
        (power_voltage_mv <
         (uint16_t)(power_high_voltage_mv - power_voltage_hysteresis_mv)))
     {

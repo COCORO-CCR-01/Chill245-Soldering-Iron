@@ -20,7 +20,7 @@ extern "C" {
 #define POWER_DEFAULT_BACKLIGHT_OFF_TIMEOUT_MS  (300000U)   /* 5 min */
 
 /* 默认电压保护参数 */
-#define POWER_DEFAULT_LOW_VOLTAGE_MV            (18000U)
+#define POWER_DEFAULT_LOW_VOLTAGE_MV            (13500U)
 #define POWER_DEFAULT_HIGH_VOLTAGE_MV           (30000U)
 #define POWER_DEFAULT_VOLTAGE_HYSTERESIS_MV     (1000U)
 #define POWER_DEFAULT_VOLTAGE_TRIP_MS           (100U)

@@ -445,6 +445,10 @@ void eeprom_init(void)
     g_eeprom_params.boot_high_temp_c = 300.0f;
     g_eeprom_params.sleep_power_pct = 13.0f;
     g_eeprom_params.max_power_pct = 50.0f;     /* 默认功率比例 50% */
+    /* 欠压门限 13.5V：20V 档掉到 15V 默认档还算正常工作，不该报欠压；
+     * 真要判"供电不行了"，13.5V 以下才是。实际生效值还会跟着 PD 档位往下限
+     * 取低（见 power_effective_low_voltage_mv），不然选 9V 档会被自己锁死。 */
+    g_eeprom_params.low_voltage_v = 13.5f;
     g_eeprom_params.bootlogo_delay_s = 0.0f;
     g_eeprom_params.quick_setpoint_save_s = 30.0f;
     g_eeprom_params.app_colors[0] = 0xFC9FU;
