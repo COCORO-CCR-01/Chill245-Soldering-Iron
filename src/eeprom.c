@@ -61,6 +61,7 @@ typedef enum
 {
   EEPROM_RECORD_BLANK = 0,
   EEPROM_RECORD_VALID,
+  EEPROM_RECORD_MIGRATABLE,   /* 版本旧但字段布局可用：读进来换算，不重置用户参数 */
   EEPROM_RECORD_OLD_VERSION,
   EEPROM_RECORD_CORRUPT
 } eeprom_record_status_t;
@@ -144,11 +145,8 @@ static eeprom_record_status_t eeprom_record_status(
     return EEPROM_RECORD_CORRUPT;
   }
 
-  if(record->version != EEPROM_FORMAT_VERSION)
-  {
-    return EEPROM_RECORD_OLD_VERSION;
-  }
-
+  /* 先验完整性再看版本：老版本不等于坏，size / commit / CRC 都对得上就说明字段
+   * 逐字节可用，交给后面的迁移换算处理。 */
   if((record->size != sizeof(eeprom_params_t)) ||
      (record->commit != EEPROM_COMMIT_MARK) ||
      (record->crc != eeprom_crc32(&record->params,
@@ -157,7 +155,19 @@ static eeprom_record_status_t eeprom_record_status(
     return EEPROM_RECORD_CORRUPT;
   }
 
-  return EEPROM_RECORD_VALID;
+  if(record->version == EEPROM_FORMAT_VERSION)
+  {
+    return EEPROM_RECORD_VALID;
+  }
+
+  if((record->version >= EEPROM_FORMAT_VERSION_MIGRATE_MIN) &&
+     (record->version < EEPROM_FORMAT_VERSION))
+  {
+    return EEPROM_RECORD_MIGRATABLE;
+  }
+
+  /* 比迁移下限还老：布局不明，只能按无有效记录处理 */
+  return EEPROM_RECORD_OLD_VERSION;
 }
 
 static uint8_t eeprom_params_sane(const eeprom_params_t *params)
@@ -390,6 +400,38 @@ void eeprom_apply(void)
   (void)verifyheater_set_config(&verify);
 }
 
+/* 把老版本记录换算成当前版本的语义，返回 1 表示改过、需要回写一次。
+ * 只在 eeprom_init() 里调用，进来之前 size / commit / CRC 都已经验过了。
+ * 有换算就当场回写，下次开机读到的就是干干净净的新版本记录。 */
+static uint8_t eeprom_migrate(uint32_t from_version)
+{
+  uint8_t changed = 0U;
+
+  /* 0x000F 之前：ch224a_index 存的是 CH224A 寄存器索引（0=5V…4=20V）。
+   * 0x000F 起改成菜单 PD VOLT 的选项号（0=AUTO / 1=15V / 2=20V），而且整机不再
+   * 提供 15V 以下的档位（低压时 PMOS 导通电阻大、发热大）。老索引一对一对不上，
+   * 统一换成 AUTO（0）：AUTO 去谈这颗供电能给的最高档，跟老版本选 20V 的效果一致，
+   * 也是最不会伤机器的选择。0x000F/0x0010 里如果残留越界的选项号，一并收成 AUTO。 */
+  if((from_version < 0x000FU) || (g_eeprom_params.ch224a_index > 2U))
+  {
+    g_eeprom_params.ch224a_index = 0U;   /* POWER_PD_OPTION_AUTO，见 powermanagement.h */
+    changed = 1U;
+  }
+
+  /* 0x0011：欠压默认门限从 13.5V 降到 13.0V（加热时 VIN 纹波实测约 2.5V 峰峰，
+   * 13.5V 只剩 0.5V 余量，大功率加热容易误报 INPUT UNDERVOLTAGE）。
+   * 用户自己改成别的值就尊重他，只把还停在旧默认值上的搬下来。 */
+  if((from_version < 0x0011U) &&
+     (g_eeprom_params.low_voltage_v > 13.49f) &&
+     (g_eeprom_params.low_voltage_v < 13.51f))
+  {
+    g_eeprom_params.low_voltage_v = 13.0f;
+    changed = 1U;
+  }
+
+  return changed;
+}
+
 void eeprom_init(void)
 {
   const eeprom_record_t *record0 = eeprom_record_at(EEPROM_SECTOR0_ADDR);
@@ -398,15 +440,35 @@ void eeprom_init(void)
     eeprom_record_status(record0, EEPROM_SECTOR0_ADDR);
   eeprom_record_status_t status1 =
     eeprom_record_status(record1, EEPROM_SECTOR1_ADDR);
-  uint8_t valid0 = (status0 == EEPROM_RECORD_VALID) ? 1U : 0U;
-  uint8_t valid1 = (status1 == EEPROM_RECORD_VALID) ? 1U : 0U;
+  /* MIGRATABLE 也算"能用"：字段布局一致，读进来换算就行，不要把用户参数整块丢掉 */
+  uint8_t valid0 = ((status0 == EEPROM_RECORD_VALID) ||
+                    (status0 == EEPROM_RECORD_MIGRATABLE)) ? 1U : 0U;
+  uint8_t valid1 = ((status1 == EEPROM_RECORD_VALID) ||
+                    (status1 == EEPROM_RECORD_MIGRATABLE)) ? 1U : 0U;
   const eeprom_record_t *newest = NULL;
 
   eeprom_error = EEPROM_ERROR_NONE;
 
   if((valid0 != 0U) && (valid1 != 0U))
   {
-    newest = (record0->sequence >= record1->sequence) ? record0 : record1;
+    /* 版本号完全对上的记录优先于待迁移的老记录。迁移写回的新记录 sequence 是从 1
+     * 重新起的，可能比老记录小；不保护的话就会被 sequence 更大的老记录顶掉，每次
+     * 开机拿老记录重新迁移一遍，中途改掉的参数会被吃掉。 */
+    uint8_t current0 = (status0 == EEPROM_RECORD_VALID) ? 1U : 0U;
+    uint8_t current1 = (status1 == EEPROM_RECORD_VALID) ? 1U : 0U;
+
+    if((current0 != 0U) && (current1 == 0U))
+    {
+      newest = record0;
+    }
+    else if((current1 != 0U) && (current0 == 0U))
+    {
+      newest = record1;
+    }
+    else
+    {
+      newest = (record0->sequence >= record1->sequence) ? record0 : record1;
+    }
   }
   else if(valid0 != 0U)
   {
@@ -422,6 +484,17 @@ void eeprom_init(void)
     g_eeprom_params = newest->params;
     eeprom_loaded_valid = 1U;
     eeprom_error = EEPROM_ERROR_NONE;
+
+    /* 老版本记录：换算完当场按新版本号回写一次，以后每次开机读到的都是干净的新
+     * 记录，不用每启动一次迁移一次。只有回写失败才算 EEPROM WRITE 致命错误。 */
+    if(eeprom_migrate(newest->version) != 0U)
+    {
+      if(eeprom_save() == 0U)
+      {
+        eeprom_error = EEPROM_ERROR_WRITE;
+        hms_set_fatal(HMS_CODE_EEPROM_WRITE);
+      }
+    }
   }
   else
   {
