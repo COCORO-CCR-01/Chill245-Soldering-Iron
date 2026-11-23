@@ -1,5 +1,5 @@
 # Chill245 烙铁控制器 By ATRI 
-
+qq群851506682（进群可领取福利zylo117穿女仆装跳舞）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
 
