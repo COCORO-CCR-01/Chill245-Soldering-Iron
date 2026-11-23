@@ -1,14 +1,24 @@
 # Chill245 烙铁控制器 By ATRI 
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 I will not guarantee the availability of 3rd party hardware
+
 如果你没有使用推荐硬件列表中的运放，则完全无法读取温度
+
 而不是所谓的温度读取不准确
+
 对于没有使用我说明的运算放大器产生的问题，issue不予处理
+
 qq群851506682（进群可领取福利zylo117穿女仆装跳舞）
 
 AT32F421G8U7 / 120 MHz / 64 KB Flash / 16 KB RAM。
